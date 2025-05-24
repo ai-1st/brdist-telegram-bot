@@ -6,6 +6,7 @@ import { TavilyClient } from "https://esm.sh/@agentic/tavily";
 import { createAISDKTools } from 'https://esm.sh/@agentic/ai-sdk';
 import { z } from 'https://esm.sh/zod';
 import { Langfuse } from "https://esm.sh/langfuse";
+import { SYSTEM_PROMPT, SPEC_GENERATION_PROMPT, BRD_GENERATION_PROMPT, WELCOME_MESSAGE } from './prompts.ts';
 import { 
   TelegramAdapter, 
   ProductionTelegramAdapter, 
@@ -154,7 +155,7 @@ export async function handleTextMessage(
       })
     };
     
-    // Store the conversation in messages table for context
+    // Store the user message
     await datastore.createMessage({
       user_id: userId,
       chat_id: chatId,
@@ -162,117 +163,32 @@ export async function handleTextMessage(
       message_text: userMessage
     });
     
+    // Get full conversation history for this session
+    const conversationHistory = await datastore.getMessages(userId, chatId);
+    
+    // Build messages array from conversation history
+    const messages = [
+      {
+        role: "system" as const,
+        content: SYSTEM_PROMPT
+      },
+      ...conversationHistory.map(msg => ({
+        role: msg.role as "user" | "assistant",
+        content: msg.message_text
+      }))
+    ];
+    
     // Create a generation span for LLM call
     const generation = trace.generation({
       name: "claude-brd-conversation",
       model: "us.anthropic.claude-3-7-sonnet-20250219-v1:0",
-      input: [
-        {
-          role: "system",
-          content: `You are BRDist, a Business Requirements Document assistant. You help users create comprehensive BRDs through intelligent conversation.
-
-Current BRD data collected so far:
-${JSON.stringify(brdData, null, 2)}
-
-Your task:
-1. If this is the user's first message (brdData is empty), acknowledge their business idea and ask about the project type
-2. Store key information from their response
-3. Ask the next most relevant question based on what's been collected
-4. When asking questions that have common options, use the CHOICES command to provide keyboard options
-
-Important guidelines:
-- Keep responses concise and professional
-- Ask one question at a time
-- Cover these areas throughout the conversation:
-  * Project type and description
-  * Target audience
-  * Project scale and timeline
-  * Budget considerations
-  * Key features and requirements
-  * Technical specifications
-  * Integration needs
-  * Compliance requirements
-  * Success metrics
-  * Any additional information
-- After collecting sufficient information (10-12 key data points), inform the user they can use /generate to create the BRD
-
-Available tools:
-- brd_update: Use this tool to store collected information with key-value pairs
-- brd_complete: Use this tool when enough information has been collected
-- choices: Use this tool to present multiple choice questions with keyboard options
-- tavily_web_search: Use for web research when needed
-
-Format all responses with HTML: <b>bold</b>, <i>italic</i>, etc.
-
-IMPORTANT: Focus on gathering detailed technical and implementation details that would be needed for a comprehensive project specification. Ask about:
-- Specific technical requirements and constraints
-- Detailed feature descriptions and user workflows
-- Performance and scalability needs
-- Security and compliance requirements
-- Integration points and APIs
-- Development methodology preferences`
-        },
-        {
-          role: "user",
-          content: userMessage
-        }
-      ]
+      input: messages
     });
 
     // Use Claude to handle the BRD conversation dynamically
     const result = await streamText({
       model: getModel(),
-      messages: [
-        {
-          role: "system",
-          content: `You are BRDist, a Business Requirements Document assistant. You help users create comprehensive BRDs through intelligent conversation.
-
-Current BRD data collected so far:
-${JSON.stringify(brdData, null, 2)}
-
-Your task:
-1. If this is the user's first message (brdData is empty), acknowledge their business idea and ask about the project type
-2. Store key information from their response
-3. Ask the next most relevant question based on what's been collected
-4. When asking questions that have common options, use the CHOICES command to provide keyboard options
-
-Important guidelines:
-- Keep responses concise and professional
-- Ask one question at a time
-- Cover these areas throughout the conversation:
-  * Project type and description
-  * Target audience
-  * Project scale and timeline
-  * Budget considerations
-  * Key features and requirements
-  * Technical specifications
-  * Integration needs
-  * Compliance requirements
-  * Success metrics
-  * Any additional information
-- After collecting sufficient information (10-12 key data points), inform the user they can use /generate to create the BRD
-
-Available tools:
-- brd_update: Use this tool to store collected information with key-value pairs
-- brd_complete: Use this tool when enough information has been collected
-- choices: Use this tool to present multiple choice questions with keyboard options
-- tavily_web_search: Use for web research when needed
-
-Format all responses with HTML: <b>bold</b>, <i>italic</i>, etc.
-
-IMPORTANT: Focus on gathering detailed technical and implementation details that would be needed for a comprehensive project specification. Ask about:
-- Specific technical requirements and constraints
-- Detailed feature descriptions and user workflows
-- Performance and scalability needs
-- Security and compliance requirements
-- Integration points and APIs
-- Development methodology preferences`
-        },
-        {
-          role: "user",
-          content: userMessage
-        }
-      ],
+      messages,
       tools,
       maxSteps: 5,
       experimental_transform: smoothStream({
@@ -387,27 +303,139 @@ export async function handleStartCommand(
     brd_data: {}
   });
   
-  // Format with HTML
-  const welcomeMessage = `💼 <b>Welcome to BRDist - Project Specification & BRD Assistant!</b>
-
-I'll help you create comprehensive project documentation through our conversation.
-
-🎯 <b>Here's how it works:</b>
-• Tell me about your business idea or project
-• I'll ask detailed questions to understand your needs
-• Answer my questions (I'll provide options when helpful)
-• Once we've gathered enough information:
-  - Use /spec to generate a technical project specification
-  - Use /generate to create a formal BRD
-
-<b>Let's start! Please describe your business idea or project in detail.</b>`;
   
   const messageSent = await telegram.sendMessage({
     chat_id: message.chat.id,
-    text: welcomeMessage,
+    text: WELCOME_MESSAGE,
     parse_mode: "HTML"
   });
   console.log(`Welcome message sent: ${messageSent ? 'success' : 'failed'}`);
+}
+
+// Handle /clear command to start a new session
+export async function handleClearCommand(
+  message: any,
+  telegram: TelegramAdapter,
+  datastore: DatastoreAdapter
+) {
+  const userId = message.from.id;
+  const chatId = message.chat.id;
+  const langfuse = createLangfuseClient();
+  
+  console.log(`Processing /clear command from user ${userId} in chat ${chatId}`);
+  
+  // Create a new Langfuse session
+  const session = langfuse.trace({
+    name: "brdist-new-session",
+    userId: userId.toString(),
+    sessionId: `session-${Date.now()}`,
+    metadata: {
+      chatId: chatId,
+      command: "clear",
+      username: message.from.username,
+      firstName: message.from.first_name
+    }
+  });
+  
+  try {
+    // Clean up any old messages and sessions
+    await datastore.deleteMessages(userId, chatId);
+    await datastore.deleteBRDSessions(userId, chatId);
+    
+    // Create new BRD session
+    await datastore.createBRDSession({
+      user_id: userId,
+      chat_id: chatId,
+      status: 'active',
+      brd_data: {}
+    });
+    
+    const messageSent = await telegram.sendMessage({
+      chat_id: chatId,
+      text: `🆕 <b>New session started!</b>\n\n${WELCOME_MESSAGE}`,
+      parse_mode: "HTML"
+    });
+    
+    session.update({
+      output: "New session created successfully"
+    });
+    
+    console.log(`New session created: ${messageSent ? 'success' : 'failed'}`);
+  } catch (error) {
+    console.error(`Error creating new session: ${error}`);
+    session.update({
+      output: `Error: ${error.message}`,
+      level: "ERROR"
+    });
+    
+    await telegram.sendMessage({
+      chat_id: chatId,
+      text: "❌ Sorry, I couldn't create a new session. Please try again.",
+      parse_mode: "HTML"
+    });
+  } finally {
+    await langfuse.flushAsync();
+  }
+}
+
+// Handle /brds command to list and switch sessions
+export async function handleBrdsCommand(
+  message: any,
+  telegram: TelegramAdapter,
+  datastore: DatastoreAdapter
+) {
+  const userId = message.from.id;
+  const chatId = message.chat.id;
+  
+  console.log(`Processing /brds command from user ${userId} in chat ${chatId}`);
+  
+  try {
+    // Get all sessions for this user
+    const sessions = await datastore.getAllBRDSessions(userId, chatId);
+    
+    if (!sessions || sessions.length === 0) {
+      await telegram.sendMessage({
+        chat_id: chatId,
+        text: "📝 You don't have any BRD sessions yet. Use /start to begin a new one!",
+        parse_mode: "HTML"
+      });
+      return;
+    }
+    
+    // Format sessions list
+    let sessionsList = "📋 <b>Your BRD Sessions:</b>\n\n";
+    sessions.forEach((session, index) => {
+      const createdAt = new Date(session.created_at).toLocaleDateString();
+      const dataCount = Object.keys(session.brd_data || {}).length;
+      const status = session.status === 'active' ? '🟢' : session.status === 'completed' ? '✅' : '📤';
+      
+      sessionsList += `${status} <b>Session ${index + 1}</b> (${createdAt})\n`;
+      sessionsList += `   Status: ${session.status}\n`;
+      sessionsList += `   Data points: ${dataCount}\n`;
+      if (dataCount > 0) {
+        const firstKey = Object.keys(session.brd_data)[0];
+        const preview = session.brd_data[firstKey]?.toString().substring(0, 50) || '';
+        sessionsList += `   Preview: ${preview}${preview.length >= 50 ? '...' : ''}\n`;
+      }
+      sessionsList += `   ID: <code>${session.id}</code>\n\n`;
+    });
+    
+    sessionsList += "💡 <i>To switch to a session, reply with its ID</i>";
+    
+    await telegram.sendMessage({
+      chat_id: chatId,
+      text: sessionsList,
+      parse_mode: "HTML"
+    });
+    
+  } catch (error) {
+    console.error(`Error listing sessions: ${error}`);
+    await telegram.sendMessage({
+      chat_id: chatId,
+      text: "❌ Sorry, I couldn't retrieve your sessions. Please try again.",
+      parse_mode: "HTML"
+    });
+  }
 }
 
 // Handle /spec command to generate project specification
@@ -433,86 +461,29 @@ export async function handleSpecCommand(
   
   telegram.sendChatAction({ chat_id: chatId, action: "typing" });
   
+  // Get conversation history for the session
+  const conversationHistory = await datastore.getMessages(userId, chatId);
+  
+  // Build messages array from conversation history
+  const messages = [
+    {
+      role: "system" as const,
+      content: SPEC_GENERATION_PROMPT
+    },
+    ...conversationHistory.map(msg => ({
+      role: msg.role as "user" | "assistant",
+      content: msg.message_text
+    })),
+    {
+      role: "user" as const,
+      content: "Generate the complete project specification document."
+    }
+  ];
+
   // Generate spec using Claude
-  const brdData = session.brd_data;
   const result = await streamText({
     model: getModel(),
-    messages: [
-      {
-        role: "system",
-        content: `You are creating a detailed project specification (spec.md) based on the collected requirements.
-
-Collected information:
-${JSON.stringify(brdData, null, 2)}
-
-Create a comprehensive specification document that includes:
-
-1. **Project Overview**
-   - Clear project name and description
-   - Problem statement
-   - Solution approach
-   - Key value propositions
-
-2. **Technical Architecture**
-   - System architecture overview
-   - Technology stack recommendations with justifications
-   - Database design considerations
-   - API design principles
-   - Security architecture
-
-3. **Functional Requirements**
-   - Detailed user stories
-   - Core features with acceptance criteria
-   - User workflows
-   - Edge cases and error handling
-
-4. **Non-Functional Requirements**
-   - Performance targets
-   - Scalability requirements
-   - Security requirements
-   - Accessibility standards
-   - Browser/device compatibility
-
-5. **Implementation Plan**
-   - Development phases
-   - MVP definition
-   - Feature prioritization
-   - Technical milestones
-
-6. **Data Model**
-   - Entity relationships
-   - Key data structures
-   - Data flow diagrams
-
-7. **Integration Requirements**
-   - External service integrations
-   - API specifications
-   - Authentication/authorization flow
-
-8. **Testing Strategy**
-   - Unit testing approach
-   - Integration testing
-   - User acceptance testing criteria
-
-9. **Deployment Strategy**
-   - Infrastructure requirements
-   - CI/CD pipeline
-   - Monitoring and logging
-
-10. **Success Metrics**
-    - KPIs and how to measure them
-    - Performance benchmarks
-    - User satisfaction metrics
-
-Format as a proper Markdown document with clear sections, code examples where relevant, and actionable details.
-Focus on being specific and implementation-ready rather than generic.
-This should be a document that a development team can use to start building immediately.`
-      },
-      {
-        role: "user",
-        content: "Generate the complete project specification document."
-      }
-    ],
+    messages,
     maxSteps: 15
   });
   
@@ -608,39 +579,29 @@ export async function handleGenerateCommand(
   
   telegram.sendChatAction({ chat_id: chatId, action: "typing" });
   
+  // Get conversation history for the session
+  const conversationHistory = await datastore.getMessages(userId, chatId);
+  
+  // Build messages array from conversation history
+  const messages = [
+    {
+      role: "system" as const,
+      content: BRD_GENERATION_PROMPT
+    },
+    ...conversationHistory.map(msg => ({
+      role: msg.role as "user" | "assistant",
+      content: msg.message_text
+    })),
+    {
+      role: "user" as const,
+      content: "Generate the complete BRD document."
+    }
+  ];
+
   // Generate BRD using Claude
-  const brdData = session.brd_data;
   const result = await streamText({
     model: getModel(),
-    messages: [
-      {
-        role: "system",
-        content: `Create a professional Business Requirements Document based on this collected information:
-${JSON.stringify(brdData, null, 2)}
-
-Format the BRD with these sections using HTML:
-1. <b>Executive Summary</b> - High-level overview of the project
-2. <b>Project Overview</b> - Detailed description of what's being built
-3. <b>Business Objectives</b> - Key goals and expected outcomes
-4. <b>Scope & Deliverables</b> - What's included and what's not
-5. <b>Functional Requirements</b> - Core features and capabilities
-6. <b>Non-Functional Requirements</b> - Performance, security, usability needs
-7. <b>Technical Architecture</b> - Technology stack and infrastructure
-8. <b>Timeline & Milestones</b> - Project phases and key dates
-9. <b>Budget Considerations</b> - Cost estimates and resource needs
-10. <b>Success Metrics</b> - KPIs and measurement criteria
-11. <b>Risks & Mitigation</b> - Potential challenges and solutions
-12. <b>Next Steps</b> - Immediate actions to move forward
-
-Use HTML formatting throughout. Be comprehensive but concise. 
-Intelligently expand on the provided information to create a professional document.
-If some sections lack specific data, make reasonable professional assumptions and note them.`
-      },
-      {
-        role: "user",
-        content: "Generate the complete BRD document."
-      }
-    ],
+    messages,
     maxSteps: 10
   });
   
@@ -705,6 +666,10 @@ export async function processWebhookMessage(
   if (message.text && message.text.startsWith("/")) {
     if (message.text.startsWith("/start")) {
       await handleStartCommand(message, telegram, datastore);
+    } else if (message.text.startsWith("/clear")) {
+      await handleClearCommand(message, telegram, datastore);
+    } else if (message.text.startsWith("/brds")) {
+      await handleBrdsCommand(message, telegram, datastore);
     } else if (message.text.startsWith("/generate")) {
       await handleGenerateCommand(message, telegram, datastore);
     } else if (message.text.startsWith("/spec")) {
@@ -712,7 +677,7 @@ export async function processWebhookMessage(
     } else {
       await telegram.sendMessage({
         chat_id: message.chat.id,
-        text: "Unknown command. Available commands:\n• /start - Begin a new project\n• /spec - Generate project specification\n• /generate - Create formal BRD",
+        text: "Unknown command. Available commands:\n• /start - Begin a new project\n• /clear - Start fresh session\n• /brds - View your sessions\n• /spec - Generate project specification\n• /generate - Create formal BRD",
         parse_mode: "HTML"
       });
     }

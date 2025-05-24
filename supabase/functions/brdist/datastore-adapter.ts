@@ -40,9 +40,11 @@ export interface DatastoreAdapter {
   createBRDSession(session: Omit<BRDSession, 'id' | 'created_at' | 'updated_at'>): Promise<BRDSession | null>;
   updateBRDSession(sessionId: string, updates: Partial<BRDSession>): Promise<boolean>;
   getLatestBRDSession(userId: number, chatId: number): Promise<BRDSession | null>;
+  getAllBRDSessions(userId: number, chatId: number): Promise<BRDSession[]>;
   
   // Messages
   createMessage(message: Omit<Message, 'id' | 'created_at'>): Promise<boolean>;
+  getMessages(userId: number, chatId: number): Promise<Message[]>;
   
   // Specs
   createSpec(spec: Omit<Spec, 'id' | 'created_at' | 'updated_at' | 'version'>): Promise<Spec | null>;
@@ -214,6 +216,39 @@ export class SupabaseDatastoreAdapter implements DatastoreAdapter {
     }
   }
   
+  async getAllBRDSessions(userId: number, chatId: number): Promise<BRDSession[]> {
+    console.log(`[${new Date().toISOString()}] getAllBRDSessions called with:`, { userId, chatId });
+    
+    try {
+      const { data, error } = await this.supabase
+        .from('brd_sessions')
+        .select('*')
+        .eq('user_id', userId)
+        .eq('chat_id', chatId)
+        .order('created_at', { ascending: false });
+      
+      console.log(`[${new Date().toISOString()}] getAllBRDSessions query result:`, {
+        sessionCount: data?.length || 0,
+        error: error ? { message: error.message, code: error.code } : null,
+        sessionPreviews: data ? data.map(s => ({
+          id: s.id,
+          status: s.status,
+          created_at: s.created_at
+        })) : []
+      });
+      
+      if (error) {
+        console.error(`[${new Date().toISOString()}] Error getting all BRD sessions:`, JSON.stringify(error, null, 2));
+        return [];
+      }
+      
+      return data || [];
+    } catch (e) {
+      console.error(`[${new Date().toISOString()}] getAllBRDSessions unexpected error:`, e);
+      return [];
+    }
+  }
+  
   async createMessage(message: Omit<Message, 'id' | 'created_at'>): Promise<boolean> {
     console.log(`[${new Date().toISOString()}] createMessage called with:`, {
       user_id: message.user_id,
@@ -246,6 +281,45 @@ export class SupabaseDatastoreAdapter implements DatastoreAdapter {
     } catch (e) {
       console.error(`[${new Date().toISOString()}] createMessage unexpected error:`, e);
       return false;
+    }
+  }
+  
+  async getMessages(userId: number, chatId: number): Promise<Message[]> {
+    console.log(`[${new Date().toISOString()}] getMessages called with:`, { userId, chatId });
+    
+    try {
+      const { data, error } = await this.supabase
+        .from('messages')
+        .select('*')
+        .eq('user_id', userId)
+        .eq('chat_id', chatId)
+        .order('created_at', { ascending: true });
+      
+      console.log(`[${new Date().toISOString()}] getMessages query result:`, {
+        messageCount: data?.length || 0,
+        error: error ? {
+          message: error.message,
+          code: error.code,
+          details: error.details
+        } : null,
+        messagePreviews: data ? data.slice(0, 3).map(m => ({
+          id: m.id,
+          role: m.role,
+          preview: m.message_text.substring(0, 50) + (m.message_text.length > 50 ? '...' : ''),
+          created_at: m.created_at
+        })) : []
+      });
+      
+      if (error) {
+        console.error(`[${new Date().toISOString()}] Error getting messages:`, JSON.stringify(error, null, 2));
+        return [];
+      }
+      
+      console.log(`[${new Date().toISOString()}] Successfully retrieved ${data?.length || 0} messages for user ${userId} in chat ${chatId}`);
+      return data || [];
+    } catch (e) {
+      console.error(`[${new Date().toISOString()}] getMessages unexpected error:`, e);
+      return [];
     }
   }
   
@@ -572,6 +646,23 @@ export class InMemoryDatastoreAdapter implements DatastoreAdapter {
     }
     
     return userSessions[0] || null;
+  }
+  
+  async getAllBRDSessions(userId: number, chatId: number): Promise<BRDSession[]> {
+    console.log(`[${new Date().toISOString()}] [InMemory] getAllBRDSessions called with:`, { userId, chatId });
+    
+    const userSessions = Array.from(this.sessions.values())
+      .filter(s => s.user_id === userId && s.chat_id === chatId)
+      .sort((a, b) => (b.created_at || 0) - (a.created_at || 0));
+    
+    console.log(`[${new Date().toISOString()}] [InMemory] Found ${userSessions.length} sessions for user`);
+    console.log(`[${new Date().toISOString()}] [InMemory] Session previews:`, userSessions.map(s => ({
+      id: s.id,
+      status: s.status,
+      created_at: s.created_at
+    })));
+    
+    return userSessions;
   }
   
   async createMessage(message: Omit<Message, 'id' | 'created_at'>): Promise<boolean> {
