@@ -5,12 +5,12 @@ CREATE TABLE IF NOT EXISTS messages (
   chat_id BIGINT NOT NULL,
   role TEXT NOT NULL CHECK (role IN ('user', 'assistant', 'system')),
   message_text TEXT NOT NULL,
-  created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL,
-  
-  -- Add indexes for common queries
-  INDEX idx_messages_user_chat (user_id, chat_id),
-  INDEX idx_messages_created_at (created_at DESC)
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL
 );
+
+-- Create indexes for messages table
+CREATE INDEX IF NOT EXISTS idx_messages_user_chat ON messages (user_id, chat_id);
+CREATE INDEX IF NOT EXISTS idx_messages_created_at ON messages (created_at DESC);
 
 -- Create brd_sessions table for tracking BRD creation sessions
 CREATE TABLE IF NOT EXISTS brd_sessions (
@@ -21,13 +21,13 @@ CREATE TABLE IF NOT EXISTS brd_sessions (
   current_step TEXT,
   brd_data JSONB DEFAULT '{}'::jsonb NOT NULL,
   created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL,
-  updated_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL,
-  
-  -- Add indexes for common queries
-  INDEX idx_brd_sessions_user_chat (user_id, chat_id),
-  INDEX idx_brd_sessions_status (status),
-  INDEX idx_brd_sessions_created_at (created_at DESC)
+  updated_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL
 );
+
+-- Create indexes for brd_sessions table
+CREATE INDEX IF NOT EXISTS idx_brd_sessions_user_chat ON brd_sessions (user_id, chat_id);
+CREATE INDEX IF NOT EXISTS idx_brd_sessions_status ON brd_sessions (status);
+CREATE INDEX IF NOT EXISTS idx_brd_sessions_created_at ON brd_sessions (created_at DESC);
 
 -- Create specs table for storing generated specifications
 CREATE TABLE IF NOT EXISTS specs (
@@ -41,14 +41,14 @@ CREATE TABLE IF NOT EXISTS specs (
   metadata JSONB DEFAULT '{}'::jsonb NOT NULL,
   version INTEGER NOT NULL DEFAULT 1,
   created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL,
-  updated_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL,
-  
-  -- Add indexes for common queries
-  INDEX idx_specs_user_chat (user_id, chat_id),
-  INDEX idx_specs_session_id (session_id),
-  INDEX idx_specs_spec_type (spec_type),
-  INDEX idx_specs_created_at (created_at DESC)
+  updated_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL
 );
+
+-- Create indexes for specs table
+CREATE INDEX IF NOT EXISTS idx_specs_user_chat ON specs (user_id, chat_id);
+CREATE INDEX IF NOT EXISTS idx_specs_session_id ON specs (session_id);
+CREATE INDEX IF NOT EXISTS idx_specs_spec_type ON specs (spec_type);
+CREATE INDEX IF NOT EXISTS idx_specs_created_at ON specs (created_at DESC);
 
 -- Create spec_versions table for tracking spec history
 CREATE TABLE IF NOT EXISTS spec_versions (
@@ -60,11 +60,13 @@ CREATE TABLE IF NOT EXISTS spec_versions (
   created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL,
   created_by BIGINT NOT NULL,
   
-  -- Add unique constraint and indexes
-  UNIQUE (spec_id, version),
-  INDEX idx_spec_versions_spec_id (spec_id),
-  INDEX idx_spec_versions_created_at (created_at DESC)
+  -- Add unique constraint
+  UNIQUE (spec_id, version)
 );
+
+-- Create indexes for spec_versions table
+CREATE INDEX IF NOT EXISTS idx_spec_versions_spec_id ON spec_versions (spec_id);
+CREATE INDEX IF NOT EXISTS idx_spec_versions_created_at ON spec_versions (created_at DESC);
 
 -- Create trigger to update the updated_at timestamp
 CREATE OR REPLACE FUNCTION update_updated_at_column()

@@ -94,7 +94,7 @@ deno task test:integration
 ### Environment Variables Required
 - `SUPABASE_URL` - Supabase project URL
 - `SUPABASE_SERVICE_ROLE_KEY` - Service role key for database access
-- `TELEGRAM_BOT_TOKEN` - Telegram bot token
+- `BRDIST_BOT_API_TOKEN` - Telegram bot token
 - `AWS_REGION` - AWS region for Bedrock
 - `AWS_ACCESS_KEY_ID` - AWS access key
 - `AWS_SECRET_ACCESS_KEY` - AWS secret key

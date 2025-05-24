@@ -65,7 +65,7 @@ Run the migration script in `/supabase/migrations/20240101000001_create_brdist_t
 
 ## Environment Variables
 
-- `TELEGRAM_BOT_TOKEN` - Telegram bot API token
+- `BRDIST_BOT_API_TOKEN` - Telegram bot API token
 - `SUPABASE_URL` - Supabase project URL
 - `SUPABASE_ANON_KEY` - Supabase anonymous key
 - `AWS_REGION` - AWS region for Bedrock

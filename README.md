@@ -28,7 +28,7 @@ Create a `.env.local` file with:
 ```env
 SUPABASE_URL=your_supabase_url
 SUPABASE_SERVICE_ROLE_KEY=your_service_role_key
-TELEGRAM_BOT_TOKEN=your_telegram_bot_token
+BRDIST_BOT_API_TOKEN=your_telegram_bot_token
 AWS_REGION=your_aws_region
 AWS_ACCESS_KEY_ID=your_aws_access_key
 AWS_SECRET_ACCESS_KEY=your_aws_secret_key
@@ -66,7 +66,12 @@ Deploy to Supabase:
 supabase functions deploy brdist
 ```
 
-Set up the Telegram webhook:
+Set up the Telegram webhook using the built-in command:
+```bash
+curl -X POST "https://<your-project>.supabase.co/functions/v1/brdist/set-webhook?secret=<FUNCTION_SECRET>"
+```
+
+Or manually set the webhook URL:
 ```
 https://<your-project>.supabase.co/functions/v1/brdist?secret=<FUNCTION_SECRET>
 ```

@@ -614,44 +614,145 @@ export async function processWebhookMessage(
   }
 }
 
-// Main webhook handler function
+// Function to set Telegram webhook
+async function setTelegramWebhook(): Promise<Response> {
+  try {
+    const botToken = Deno.env.get("BRDIST_BOT_API_TOKEN");
+    const functionSecret = Deno.env.get("FUNCTION_SECRET");
+    const supabaseUrl = Deno.env.get("SUPABASE_URL");
+    
+    if (!botToken || !functionSecret || !supabaseUrl) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: "Missing required environment variables"
+      }), {
+        status: 500,
+        headers: { "Content-Type": "application/json" }
+      });
+    }
+    
+    // Extract project ref from Supabase URL
+    const projectRef = supabaseUrl.match(/https:\/\/([^.]+)\.supabase\.co/)?.[1];
+    if (!projectRef) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: "Could not extract project reference from SUPABASE_URL"
+      }), {
+        status: 500,
+        headers: { "Content-Type": "application/json" }
+      });
+    }
+    
+    // Construct webhook URL
+    const webhookUrl = `https://${projectRef}.supabase.co/functions/v1/brdist?secret=${functionSecret}`;
+    
+    // Set webhook via Telegram API
+    const telegramApiUrl = `https://api.telegram.org/bot${botToken}/setWebhook`;
+    const response = await fetch(telegramApiUrl, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        url: webhookUrl,
+        allowed_updates: ["message"],
+        drop_pending_updates: true
+      })
+    });
+    
+    const result = await response.json();
+    
+    if (result.ok) {
+      return new Response(JSON.stringify({
+        success: true,
+        message: "Webhook set successfully",
+        webhook_url: webhookUrl,
+        telegram_response: result
+      }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" }
+      });
+    } else {
+      return new Response(JSON.stringify({
+        success: false,
+        error: "Failed to set webhook",
+        telegram_response: result
+      }), {
+        status: 400,
+        headers: { "Content-Type": "application/json" }
+      });
+    }
+  } catch (error) {
+    console.error(`Error setting webhook: ${error}`);
+    return new Response(JSON.stringify({
+      success: false,
+      error: error.message
+    }), {
+      status: 500,
+      headers: { "Content-Type": "application/json" }
+    });
+  }
+}
+
+// Main handler function
 if (import.meta.main) {
   serve(async (req)=>{
     try {
-      // Verify the secret
       const url = new URL(req.url);
-      const secret = url.searchParams.get("secret");
-      const expectedSecret = Deno.env.get("FUNCTION_SECRET");
-      if (secret !== expectedSecret) {
-        console.error(`Unauthorized request: Invalid secret`);
-        return new Response("Unauthorized", {
-          status: 401
-        });
+      const pathname = url.pathname;
+      
+      // Handle set-webhook endpoint
+      if (pathname.endsWith('/set-webhook') && (req.method === 'POST' || req.method === 'GET')) {
+        // Verify the secret for set-webhook endpoint
+        const secret = url.searchParams.get("secret");
+        const expectedSecret = Deno.env.get("FUNCTION_SECRET");
+        if (secret !== expectedSecret) {
+          return new Response("Unauthorized", { status: 401 });
+        }
+        return await setTelegramWebhook();
       }
-      // Parse the webhook data
-      const update = await req.json();
-      // Handle the message
-      const message = update.message;
-      if (!message) {
-        return new Response("No message in update", {
+      
+      // Handle webhook endpoint (default)
+      if (req.method === 'POST' && pathname.endsWith('/brdist')) {
+        // Verify the secret
+        const secret = url.searchParams.get("secret");
+        const expectedSecret = Deno.env.get("FUNCTION_SECRET");
+        if (secret !== expectedSecret) {
+          console.error(`Unauthorized request: Invalid secret`);
+          return new Response("Unauthorized", {
+            status: 401
+          });
+        }
+        
+        // Parse the webhook data
+        const update = await req.json();
+        // Handle the message
+        const message = update.message;
+        if (!message) {
+          return new Response("No message in update", {
+            status: 200
+          });
+        }
+        
+        // Create production adapters
+        const telegram = new ProductionTelegramAdapter(Deno.env.get("BRDIST_BOT_API_TOKEN") || "");
+        const supabase = createSupabaseClient();
+        const datastore = new SupabaseDatastoreAdapter(supabase);
+        
+        await processWebhookMessage(message, telegram, datastore);
+        
+        // Always return 200 OK quickly to acknowledge receipt
+        return new Response("OK", {
           status: 200
         });
       }
       
-      // Create production adapters
-      const telegram = new ProductionTelegramAdapter(Deno.env.get("TELEGRAM_BOT_TOKEN") || "");
-      const supabase = createSupabaseClient();
-      const datastore = new SupabaseDatastoreAdapter(supabase);
+      // Handle unsupported methods
+      return new Response("Method not allowed", { status: 405 });
       
-      await processWebhookMessage(message, telegram, datastore);
-      
-      // Always return 200 OK quickly to acknowledge receipt
-      return new Response("OK", {
-        status: 200
-      });
     } catch (error) {
-      console.error(`Error processing webhook: ${error}`);
-      return new Response("Error processing webhook", {
+      console.error(`Error processing request: ${error}`);
+      return new Response("Error processing request", {
         status: 500
       });
     }

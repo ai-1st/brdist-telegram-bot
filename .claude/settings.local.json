@@ -3,7 +3,11 @@
     "allow": [
       "Bash(deno test:*)",
       "WebFetch(domain:harper.blog)",
-      "Bash(mkdir:*)"
+      "Bash(mkdir:*)",
+      "Bash(supabase projects:*)",
+      "Bash(supabase functions deploy:*)",
+      "Bash(supabase logs:*)",
+      "Bash(supabase:*)"
     ],
     "deny": []
   }
