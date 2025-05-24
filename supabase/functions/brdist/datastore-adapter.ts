@@ -685,6 +685,24 @@ export class InMemoryDatastoreAdapter implements DatastoreAdapter {
     return true;
   }
   
+  async getMessages(userId: number, chatId: number): Promise<Message[]> {
+    console.log(`[${new Date().toISOString()}] [InMemory] getMessages called with:`, { userId, chatId });
+    
+    const userMessages = this.messages
+      .filter(m => m.user_id === userId && m.chat_id === chatId)
+      .sort((a, b) => (a.created_at || 0) - (b.created_at || 0));
+    
+    console.log(`[${new Date().toISOString()}] [InMemory] Found ${userMessages.length} messages for user ${userId} in chat ${chatId}`);
+    console.log(`[${new Date().toISOString()}] [InMemory] Message previews:`, userMessages.slice(0, 3).map(m => ({
+      id: m.id,
+      role: m.role,
+      preview: m.message_text.substring(0, 50) + (m.message_text.length > 50 ? '...' : ''),
+      created_at: m.created_at
+    })));
+    
+    return userMessages;
+  }
+  
   async createSpec(spec: Omit<Spec, 'id' | 'created_at' | 'updated_at' | 'version'>): Promise<Spec | null> {
     console.log(`[${new Date().toISOString()}] [InMemory] createSpec called with:`, {
       user_id: spec.user_id,
