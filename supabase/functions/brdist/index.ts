@@ -1,9 +1,11 @@
 import { serve } from "https://deno.land/std/http/server.ts";
 import { createAmazonBedrock } from 'https://esm.sh/@ai-sdk/amazon-bedrock';
-import { streamText, smoothStream } from 'https://esm.sh/ai@4.2.6';
+import { streamText, smoothStream, tool } from 'https://esm.sh/ai@4.2.6';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { TavilyClient } from "https://esm.sh/@agentic/tavily";
 import { createAISDKTools } from 'https://esm.sh/@agentic/ai-sdk';
+import { z } from 'https://esm.sh/zod';
+import { Langfuse } from "https://esm.sh/langfuse";
 import { 
   TelegramAdapter, 
   ProductionTelegramAdapter, 
@@ -14,6 +16,16 @@ import {
   SupabaseDatastoreAdapter,
   InMemoryDatastoreAdapter
 } from './datastore-adapter.ts';
+
+// Initialize Langfuse
+export function createLangfuseClient() {
+  const langfuse = new Langfuse({
+    secretKey: "sk-lf-916764a2-6e05-4ea8-81e5-305efc136645",
+    publicKey: "pk-lf-5a9fc3b5-13dd-4465-b3f7-0aa47ebbff8c",
+    baseUrl: "https://us.cloud.langfuse.com"
+  });
+  return langfuse;
+}
 
 // Create a Supabase client using the service role
 export function createSupabaseClient() {
@@ -43,10 +55,25 @@ export async function handleTextMessage(
   telegram: TelegramAdapter,
   datastore: DatastoreAdapter
 ) {
+  const langfuse = createLangfuseClient();
+  const trace = langfuse.trace({
+    name: "brdist-conversation",
+    userId: message.from.id.toString(),
+    metadata: {
+      chatId: message.chat.id,
+      username: message.from.username,
+      firstName: message.from.first_name
+    }
+  });
+
   try {
     const userMessage = message.text || "";
     const userId = message.from.id;
     const chatId = message.chat.id;
+    
+    trace.update({
+      input: userMessage
+    });
     
     // Show typing indicator
     telegram.sendChatAction({ chat_id: chatId, action: "typing" });
@@ -73,6 +100,7 @@ export async function handleTextMessage(
     
     // Store the user's response in BRD data
     const brdData = session.brd_data || {};
+    let isComplete = false;
     
     // Initialize Tavily client
     const tavily = new TavilyClient({
@@ -81,7 +109,49 @@ export async function handleTextMessage(
     
     // Set up synchronous tools for Claude
     const tools = {
-      ...createAISDKTools(tavily)
+      ...createAISDKTools(tavily),
+      brd_update: tool({
+        description: 'Update BRD data with key-value pairs',
+        parameters: z.object({
+          key: z.string().describe('The data key to update'),
+          value: z.string().describe('The value to store')
+        }),
+        execute: async ({ key, value }) => {
+          brdData[key] = value;
+          return `Updated ${key}: ${value}`;
+        }
+      }),
+      brd_complete: tool({
+        description: 'Mark BRD data collection as complete',
+        parameters: z.object({}),
+        execute: async () => {
+          isComplete = true;
+          return 'BRD data collection marked as complete';
+        }
+      }),
+      choices: tool({
+        description: 'Present multiple choice options to the user',
+        parameters: z.object({
+          question: z.string().describe('The question to ask'),
+          options: z.array(z.string()).describe('Array of choice options')
+        }),
+        execute: async ({ question, options }) => {
+          const replyMarkup = {
+            keyboard: options.map(option => [{ text: option }]),
+            resize_keyboard: true,
+            one_time_keyboard: true
+          };
+          
+          await telegram.sendMessage({
+            chat_id: chatId,
+            text: `<b>${question}</b>`,
+            parse_mode: "HTML",
+            reply_markup: replyMarkup
+          });
+          
+          return `Presented choices: ${options.join(', ')}`;
+        }
+      })
     };
     
     // Store the conversation in messages table for context
@@ -92,6 +162,63 @@ export async function handleTextMessage(
       message_text: userMessage
     });
     
+    // Create a generation span for LLM call
+    const generation = trace.generation({
+      name: "claude-brd-conversation",
+      model: "us.anthropic.claude-3-7-sonnet-20250219-v1:0",
+      input: [
+        {
+          role: "system",
+          content: `You are BRDist, a Business Requirements Document assistant. You help users create comprehensive BRDs through intelligent conversation.
+
+Current BRD data collected so far:
+${JSON.stringify(brdData, null, 2)}
+
+Your task:
+1. If this is the user's first message (brdData is empty), acknowledge their business idea and ask about the project type
+2. Store key information from their response
+3. Ask the next most relevant question based on what's been collected
+4. When asking questions that have common options, use the CHOICES command to provide keyboard options
+
+Important guidelines:
+- Keep responses concise and professional
+- Ask one question at a time
+- Cover these areas throughout the conversation:
+  * Project type and description
+  * Target audience
+  * Project scale and timeline
+  * Budget considerations
+  * Key features and requirements
+  * Technical specifications
+  * Integration needs
+  * Compliance requirements
+  * Success metrics
+  * Any additional information
+- After collecting sufficient information (10-12 key data points), inform the user they can use /generate to create the BRD
+
+Available tools:
+- brd_update: Use this tool to store collected information with key-value pairs
+- brd_complete: Use this tool when enough information has been collected
+- choices: Use this tool to present multiple choice questions with keyboard options
+- tavily_web_search: Use for web research when needed
+
+Format all responses with HTML: <b>bold</b>, <i>italic</i>, etc.
+
+IMPORTANT: Focus on gathering detailed technical and implementation details that would be needed for a comprehensive project specification. Ask about:
+- Specific technical requirements and constraints
+- Detailed feature descriptions and user workflows
+- Performance and scalability needs
+- Security and compliance requirements
+- Integration points and APIs
+- Development methodology preferences`
+        },
+        {
+          role: "user",
+          content: userMessage
+        }
+      ]
+    });
+
     // Use Claude to handle the BRD conversation dynamically
     const result = await streamText({
       model: getModel(),
@@ -125,10 +252,11 @@ Important guidelines:
   * Any additional information
 - After collecting sufficient information (10-12 key data points), inform the user they can use /generate to create the BRD
 
-Commands to use:
-- CHOICES question_text; option1; option2; option3... (for multiple choice questions)
-- BRD_UPDATE key:value (to store data - ALWAYS use this when you get useful information)
-- BRD_COMPLETE (when enough information is collected)
+Available tools:
+- brd_update: Use this tool to store collected information with key-value pairs
+- brd_complete: Use this tool when enough information has been collected
+- choices: Use this tool to present multiple choice questions with keyboard options
+- tavily_web_search: Use for web research when needed
 
 Format all responses with HTML: <b>bold</b>, <i>italic</i>, etc.
 
@@ -153,62 +281,24 @@ IMPORTANT: Focus on gathering detailed technical and implementation details that
       }),
       onError: ({ error })=>{
         console.error(`Error in streaming response: ${error}`);
+        generation.end({
+          completionStartTime: new Date(),
+          output: `Error: ${error.message}`
+        });
       }
     });
     
     // Process the streaming response
     let responseBuffer = "";
-    let brdUpdates: Record<string, string> = {};
-    let isComplete = false;
     
     for await (const textPart of result.textStream){
-      // Check for special commands
-      if (textPart.includes("CHOICES ")) {
-        const choicesMatch = textPart.match(/CHOICES ([^;]+);(.+)/);
-        if (choicesMatch) {
-          const question = choicesMatch[1].trim();
-          const options = choicesMatch[2].split(';').map(opt => opt.trim()).filter(opt => opt.length > 0);
-          
-          const replyMarkup = {
-            keyboard: options.map(option => [{ text: option }]),
-            resize_keyboard: true,
-            one_time_keyboard: true
-          };
-          
-          await telegram.sendMessage({
-            chat_id: chatId,
-            text: `<b>${question}</b>`,
-            parse_mode: "HTML",
-            reply_markup: replyMarkup
-          });
-          continue;
-        }
-      }
-      
-      if (textPart.includes("BRD_UPDATE ")) {
-        const updates = textPart.match(/BRD_UPDATE ([^:]+):(.+)/g);
-        if (updates) {
-          for (const update of updates) {
-            const match = update.match(/BRD_UPDATE ([^:]+):(.+)/);
-            if (match) {
-              const key = match[1].trim();
-              const value = match[2].trim();
-              brdUpdates[key] = value;
-              brdData[key] = value;
-            }
-          }
-        }
-        continue;
-      }
-      
-      if (textPart.includes("BRD_COMPLETE")) {
-        isComplete = true;
-        continue;
-      }
-      
-      // Regular text
       responseBuffer += textPart;
     }
+    
+    // End the generation span with the output
+    generation.end({
+      output: responseBuffer
+    });
     
     // Send any regular text response
     if (responseBuffer.trim().length > 0) {
@@ -219,8 +309,8 @@ IMPORTANT: Focus on gathering detailed technical and implementation details that
       });
     }
     
-    // Update BRD session with new data
-    if (Object.keys(brdUpdates).length > 0 && session.id) {
+    // Update BRD session with current data (tools will have updated brdData)
+    if (session.id) {
       await datastore.updateBRDSession(session.id, {
         brd_data: brdData
       });
@@ -245,14 +335,34 @@ IMPORTANT: Focus on gathering detailed technical and implementation details that
         message_text: responseBuffer
       });
     }
+
+    // End the trace successfully
+    trace.update({
+      output: responseBuffer,
+      metadata: {
+        brdDataKeys: Object.keys(brdData),
+        sessionComplete: isComplete
+      }
+    });
+
   } catch (error) {
     console.error(`Error generating response: ${error}`);
     console.error(`Error stack: ${(error as Error).stack}`);
+    
+    // Log error to Langfuse
+    trace.update({
+      output: `Error: ${error.message}`,
+      level: "ERROR"
+    });
+
     await telegram.sendMessage({
       chat_id: message.chat.id,
       text: "Sorry, an error occurred while processing your message. Please try again.",
       parse_mode: "HTML"
     });
+  } finally {
+    // Ensure trace is flushed
+    await langfuse.flushAsync();
   }
 }
 
