@@ -207,37 +207,86 @@ export async function handleTextMessage(
         
         // Process TG_IMAGE commands
         if (line.startsWith("TG_IMAGE ") && line.includes(";")) {
-        const parts = textPart.replace("TG_IMAGE ", "").split(";");
-        if (parts.length >= 1) {
-          const imageUrl = parts[0].trim();
-          const caption = parts[1]?.trim() || "";
-          console.log(`Processing image command: URL=${imageUrl}, Caption=${caption}`);
-          
+          const parts = line.replace("TG_IMAGE ", "").split(";");
+          if (parts.length >= 1) {
+            const imageUrl = parts[0].trim();
+            const caption = parts[1]?.trim() || "";
+            console.log(`Processing image command: URL=${imageUrl}, Caption=${caption}`);
+            
+            try {
+              await telegram.sendPhoto({
+                chat_id: chatId,
+                photo: imageUrl,
+                caption: caption,
+                parse_mode: "HTML"
+              });
+              console.log(`Sent image to Telegram: success`);
+            } catch (error) {
+              console.log(`Failed to send image: ${error}`);
+            }
+            
+            // Show typing indicator to continue conversation flow
+            telegram.sendChatAction({ chat_id: chatId, action: "typing" });
+          }
+        }
+        // Process TG_CONCLUSION commands  
+        else if (line.startsWith("TG_CONCLUSION ") && line.includes(";")) {
+          const parts = line.replace("TG_CONCLUSION ", "").split(";");
+          if (parts.length >= 2) {
+            const conclusionText = parts[0].trim();
+            const suggestions = parts.slice(1).map(s => s.trim()).filter(s => s.length > 0);
+            console.log(`Processing conclusion command: Text=${conclusionText.substring(0, 50)}..., Suggestions=${JSON.stringify(suggestions)}`);
+            
+            // Create reply markup with suggestions
+            const replyMarkup = {
+              keyboard: suggestions.map(suggestion => [{ text: suggestion }]),
+              resize_keyboard: true,
+              one_time_keyboard: true
+            };
+            
+            try {
+              await telegram.sendMessage({
+                chat_id: chatId,
+                text: conclusionText,
+                parse_mode: "HTML",
+                reply_markup: replyMarkup
+              });
+              console.log(`Sent conclusion with ${suggestions.length} suggestions to Telegram: success`);
+            } catch (error) {
+              console.log(`Failed to send conclusion: ${error}`);
+            }
+          }
+        }
+        // Process regular text
+        else {
+          console.log(`Sending text line: ${line.substring(0, 50)}...`);
           try {
-            await telegram.sendPhoto({
+            await telegram.sendMessage({
               chat_id: chatId,
-              photo: imageUrl,
-              caption: caption,
+              text: line,
               parse_mode: "HTML"
             });
-            console.log(`Sent image to Telegram: success`);
+            console.log(`Sent text line to Telegram: success`);
           } catch (error) {
-            console.log(`Failed to send image: ${error}`);
+            console.log(`Failed to send text line: ${error}`);
           }
           
           // Show typing indicator to continue conversation flow
           telegram.sendChatAction({ chat_id: chatId, action: "typing" });
         }
       }
-      // Process TG_CONCLUSION commands  
-      else if (textPart.startsWith("TG_CONCLUSION ") && textPart.includes(";")) {
-        const parts = textPart.replace("TG_CONCLUSION ", "").split(";");
+    }
+    
+    // Process any remaining line in the buffer
+    if (lineBuffer.trim().length > 0) {
+      console.log(`[Processing final line]: ${lineBuffer}`);
+      
+      if (lineBuffer.startsWith("TG_CONCLUSION ") && lineBuffer.includes(";")) {
+        const parts = lineBuffer.replace("TG_CONCLUSION ", "").split(";");
         if (parts.length >= 2) {
           const conclusionText = parts[0].trim();
           const suggestions = parts.slice(1).map(s => s.trim()).filter(s => s.length > 0);
-          console.log(`Processing conclusion command: Text=${conclusionText.substring(0, 50)}..., Suggestions=${JSON.stringify(suggestions)}`);
           
-          // Create reply markup with suggestions
           const replyMarkup = {
             keyboard: suggestions.map(suggestion => [{ text: suggestion }]),
             resize_keyboard: true,
@@ -251,28 +300,23 @@ export async function handleTextMessage(
               parse_mode: "HTML",
               reply_markup: replyMarkup
             });
-            console.log(`Sent conclusion with ${suggestions.length} suggestions to Telegram: success`);
+            console.log(`Sent final conclusion with ${suggestions.length} suggestions`);
           } catch (error) {
-            console.log(`Failed to send conclusion: ${error}`);
+            console.log(`Failed to send final conclusion: ${error}`);
           }
         }
-      }
-      // Process regular text
-      else if (textPart.trim().length > 0) {
-        console.log(`Sending text chunk: ${textPart.substring(0, 50)}...`);
+      } else if (!lineBuffer.startsWith("TG_IMAGE ")) {
+        // Send as regular text if it's not a special command
         try {
           await telegram.sendMessage({
             chat_id: chatId,
-            text: textPart,
+            text: lineBuffer,
             parse_mode: "HTML"
           });
-          console.log(`Sent text chunk to Telegram: success`);
+          console.log(`Sent final text line to Telegram`);
         } catch (error) {
-          console.log(`Failed to send text chunk: ${error}`);
+          console.log(`Failed to send final text line: ${error}`);
         }
-        
-        // Show typing indicator to continue conversation flow
-        telegram.sendChatAction({ chat_id: chatId, action: "typing" });
       }
     }
     
@@ -507,8 +551,13 @@ export async function handleSpecCommand(
   const userId = message.from.id;
   const chatId = message.chat.id;
   
-  // Get the current session
-  const session = await datastore.getLatestBRDSession(userId, chatId);
+  console.log(`[handleSpecCommand] Starting spec generation for user ${userId} in chat ${chatId}`);
+  
+  try {
+    // Get the current session
+    const session = await datastore.getLatestBRDSession(userId, chatId);
+    console.log(`[handleSpecCommand] Session retrieved: ${session ? session.id : 'none'}`);
+    console.log(`[handleSpecCommand] BRD data keys: ${session?.brd_data ? Object.keys(session.brd_data).join(', ') : 'none'}`);
   
   if (!session || !session.brd_data || Object.keys(session.brd_data).length < 5) {
     await telegram.sendMessage({
@@ -519,10 +568,18 @@ export async function handleSpecCommand(
     return;
   }
   
+  // Send initial message to acknowledge the command
+  await telegram.sendMessage({
+    chat_id: chatId,
+    text: "🔄 Generating your project specification. This may take a moment...",
+    parse_mode: "HTML"
+  });
+  
   telegram.sendChatAction({ chat_id: chatId, action: "typing" });
   
   // Get conversation history for the session
   const conversationHistory = await datastore.getMessages(userId, chatId);
+  console.log(`[handleSpecCommand] Retrieved ${conversationHistory.length} messages`);
   
   // Build messages array from conversation history
   const messages = [
@@ -541,6 +598,7 @@ export async function handleSpecCommand(
   ];
 
   // Generate spec using Claude
+  console.log(`[handleSpecCommand] Starting Claude generation`);
   const result = await streamText({
     model: getModel(),
     messages,
@@ -551,6 +609,7 @@ export async function handleSpecCommand(
   for await (const chunk of result.textStream) {
     specContent += chunk;
   }
+  console.log(`[handleSpecCommand] Generated spec content length: ${specContent.length}`);
   
   // Extract title from the spec (usually first # heading)
   const titleMatch = specContent.match(/^#\s+(.+)$/m);
@@ -565,7 +624,7 @@ export async function handleSpecCommand(
     content: specContent,
     spec_type: 'project',
     metadata: {
-      brd_data_keys: Object.keys(brdData),
+      brd_data_keys: Object.keys(session.brd_data || {}),
       generated_from: 'brd_session'
     }
   });
@@ -614,6 +673,14 @@ export async function handleSpecCommand(
     text: completionMsg,
     parse_mode: "HTML"
   });
+  
+  console.log(`[handleSpecCommand] Spec generation completed successfully`);
+  
+  } catch (error) {
+    console.error(`[handleSpecCommand] Error: ${error}`);
+    console.error(`[handleSpecCommand] Error stack: ${error.stack}`);
+    throw error; // Re-throw to be caught by outer handler
+  }
 }
 
 // Handle /generate command to create the final BRD
@@ -733,7 +800,17 @@ export async function processWebhookMessage(
     } else if (message.text.startsWith("/generate")) {
       await handleGenerateCommand(message, telegram, datastore);
     } else if (message.text.startsWith("/spec")) {
-      await handleSpecCommand(message, telegram, datastore);
+      try {
+        await handleSpecCommand(message, telegram, datastore);
+      } catch (error) {
+        console.error(`Error in handleSpecCommand: ${error}`);
+        console.error(`Error stack: ${error.stack}`);
+        await telegram.sendMessage({
+          chat_id: message.chat.id,
+          text: "❌ Sorry, I encountered an error while generating the specification. Please try again.",
+          parse_mode: "HTML"
+        });
+      }
     } else {
       await telegram.sendMessage({
         chat_id: message.chat.id,
@@ -832,16 +909,24 @@ async function setTelegramWebhook(): Promise<Response> {
 // Main handler function
 if (import.meta.main) {
   serve(async (req)=>{
+    console.log(`\n[WEBHOOK REQUEST] ${new Date().toISOString()}`);
+    console.log(`[WEBHOOK] Method: ${req.method}`);
+    console.log(`[WEBHOOK] URL: ${req.url}`);
+    console.log(`[WEBHOOK] Headers: ${JSON.stringify(Object.fromEntries(req.headers.entries()), null, 2)}`);
+    
     try {
       const url = new URL(req.url);
       const pathname = url.pathname;
+      console.log(`[WEBHOOK] Pathname: ${pathname}`);
       
       // Handle set-webhook endpoint
       if (pathname.endsWith('/set-webhook') && (req.method === 'POST' || req.method === 'GET')) {
+        console.log(`[WEBHOOK] Handling set-webhook endpoint`);
         // Verify the secret for set-webhook endpoint
         const secret = url.searchParams.get("secret");
         const expectedSecret = Deno.env.get("FUNCTION_SECRET");
         if (secret !== expectedSecret) {
+          console.error(`[WEBHOOK] Unauthorized: Invalid secret for set-webhook`);
           return new Response("Unauthorized", { status: 401 });
         }
         return await setTelegramWebhook();
@@ -849,25 +934,57 @@ if (import.meta.main) {
       
       // Handle webhook endpoint (default)
       if (req.method === 'POST' && pathname.endsWith('/brdist')) {
+        console.log(`[WEBHOOK] Handling Telegram webhook endpoint`);
+        
         // Verify the secret
         const secret = url.searchParams.get("secret");
         const expectedSecret = Deno.env.get("FUNCTION_SECRET");
+        console.log(`[WEBHOOK] Secret check: provided="${secret ? 'exists' : 'missing'}", expected="${expectedSecret ? 'exists' : 'missing'}"`);
+        
         if (secret !== expectedSecret) {
-          console.error(`Unauthorized request: Invalid secret`);
+          console.error(`[WEBHOOK] Unauthorized request: Invalid secret`);
           return new Response("Unauthorized", {
             status: 401
           });
         }
         
+        // Read raw body first for logging
+        const rawBody = await req.text();
+        console.log(`[WEBHOOK RAW BODY] ${rawBody}`);
+        
         // Parse the webhook data
-        const update = await req.json();
+        let update;
+        try {
+          update = JSON.parse(rawBody);
+          console.log(`[WEBHOOK PARSED] Update object: ${JSON.stringify(update, null, 2)}`);
+        } catch (error) {
+          console.error(`[WEBHOOK] Failed to parse JSON: ${error}`);
+          console.error(`[WEBHOOK] Raw body was: ${rawBody}`);
+          return new Response("Invalid JSON", {
+            status: 400
+          });
+        }
+        
         // Handle the message
         const message = update.message;
         if (!message) {
+          console.log(`[WEBHOOK] No 'message' field in update`);
+          console.log(`[WEBHOOK] Available fields: ${Object.keys(update).join(', ')}`);
+          if (update.edited_message) {
+            console.log(`[WEBHOOK] Ignoring edited_message`);
+          }
+          if (update.callback_query) {
+            console.log(`[WEBHOOK] Ignoring callback_query`);
+          }
           return new Response("No message in update", {
             status: 200
           });
         }
+        
+        console.log(`[WEBHOOK MESSAGE] From: ${message.from?.username || message.from?.id}`);
+        console.log(`[WEBHOOK MESSAGE] Chat: ${message.chat?.id}`);
+        console.log(`[WEBHOOK MESSAGE] Text: "${message.text}"`);
+        console.log(`[WEBHOOK MESSAGE] Full message object: ${JSON.stringify(message, null, 2)}`)
         
         // Create production adapters
         const telegram = new ProductionTelegramAdapter(Deno.env.get("BRDIST_BOT_API_TOKEN") || "");
@@ -882,14 +999,18 @@ if (import.meta.main) {
         });
       }
       
-      // Handle unsupported methods
+      // Handle unsupported methods or unmatched paths
+      console.log(`[WEBHOOK] Unhandled request - Method: ${req.method}, Path: ${pathname}`);
       return new Response("Method not allowed", { status: 405 });
       
     } catch (error) {
-      console.error(`Error processing request: ${error}`);
+      console.error(`[WEBHOOK ERROR] Error processing request: ${error}`);
+      console.error(`[WEBHOOK ERROR] Stack trace: ${error.stack}`);
       return new Response("Error processing request", {
         status: 500
       });
+    } finally {
+      console.log(`[WEBHOOK] Request processing completed at ${new Date().toISOString()}\n`);
     }
   });
 }
