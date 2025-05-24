@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(deno test:*)",
+      "WebFetch(domain:harper.blog)",
+      "Bash(mkdir:*)"
+    ],
+    "deny": []
+  }
+}

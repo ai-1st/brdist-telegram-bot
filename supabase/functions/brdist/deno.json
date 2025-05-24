@@ -1,0 +1,7 @@
+{
+  "tasks": {
+    "test": "deno test --allow-env --allow-net --allow-read index.test.ts",
+    "test:integration": "RUN_INTEGRATION_TESTS=true deno test --allow-env --allow-net --allow-read index.test.ts",
+    "serve": "deno run --allow-net --allow-env --allow-read --watch index.ts"
+  }
+}
