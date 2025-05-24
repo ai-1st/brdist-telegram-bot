@@ -130,29 +130,6 @@ export async function handleTextMessage(
           return 'BRD data collection marked as complete';
         }
       }),
-      choices: tool({
-        description: 'Present multiple choice options to the user',
-        parameters: z.object({
-          question: z.string().describe('The question to ask'),
-          options: z.array(z.string()).describe('Array of choice options')
-        }),
-        execute: async ({ question, options }) => {
-          const replyMarkup = {
-            keyboard: options.map(option => [{ text: option }]),
-            resize_keyboard: true,
-            one_time_keyboard: true
-          };
-          
-          await telegram.sendMessage({
-            chat_id: chatId,
-            text: `<b>${question}</b>`,
-            parse_mode: "HTML",
-            reply_markup: replyMarkup
-          });
-          
-          return `Presented choices: ${options.join(', ')}`;
-        }
-      })
     };
     
     // Store the user message
@@ -204,26 +181,109 @@ export async function handleTextMessage(
       }
     });
     
-    // Process the streaming response
+    // Process the streaming response line by line
     let responseBuffer = "";
+    let chunkCount = 0;
+    let lineBuffer = "";
     
     for await (const textPart of result.textStream){
+      chunkCount++;
+      console.log(`[Streaming] Chunk ${chunkCount}: ${textPart.substring(0, 100).replace(/\n/g, '\\n')}...`);
+      
+      // Add to buffers
       responseBuffer += textPart;
+      lineBuffer += textPart;
+      
+      // Process complete lines
+      const lines = lineBuffer.split('\n');
+      // Keep the last incomplete line in the buffer
+      lineBuffer = lines.pop() || "";
+      
+      // Process each complete line
+      for (const line of lines) {
+        if (line.trim().length === 0) continue;
+        
+        console.log(`[Processing line]: ${line.substring(0, 100)}...`);
+        
+        // Process TG_IMAGE commands
+        if (line.startsWith("TG_IMAGE ") && line.includes(";")) {
+        const parts = textPart.replace("TG_IMAGE ", "").split(";");
+        if (parts.length >= 1) {
+          const imageUrl = parts[0].trim();
+          const caption = parts[1]?.trim() || "";
+          console.log(`Processing image command: URL=${imageUrl}, Caption=${caption}`);
+          
+          try {
+            await telegram.sendPhoto({
+              chat_id: chatId,
+              photo: imageUrl,
+              caption: caption,
+              parse_mode: "HTML"
+            });
+            console.log(`Sent image to Telegram: success`);
+          } catch (error) {
+            console.log(`Failed to send image: ${error}`);
+          }
+          
+          // Show typing indicator to continue conversation flow
+          telegram.sendChatAction({ chat_id: chatId, action: "typing" });
+        }
+      }
+      // Process TG_CONCLUSION commands  
+      else if (textPart.startsWith("TG_CONCLUSION ") && textPart.includes(";")) {
+        const parts = textPart.replace("TG_CONCLUSION ", "").split(";");
+        if (parts.length >= 2) {
+          const conclusionText = parts[0].trim();
+          const suggestions = parts.slice(1).map(s => s.trim()).filter(s => s.length > 0);
+          console.log(`Processing conclusion command: Text=${conclusionText.substring(0, 50)}..., Suggestions=${JSON.stringify(suggestions)}`);
+          
+          // Create reply markup with suggestions
+          const replyMarkup = {
+            keyboard: suggestions.map(suggestion => [{ text: suggestion }]),
+            resize_keyboard: true,
+            one_time_keyboard: true
+          };
+          
+          try {
+            await telegram.sendMessage({
+              chat_id: chatId,
+              text: conclusionText,
+              parse_mode: "HTML",
+              reply_markup: replyMarkup
+            });
+            console.log(`Sent conclusion with ${suggestions.length} suggestions to Telegram: success`);
+          } catch (error) {
+            console.log(`Failed to send conclusion: ${error}`);
+          }
+        }
+      }
+      // Process regular text
+      else if (textPart.trim().length > 0) {
+        console.log(`Sending text chunk: ${textPart.substring(0, 50)}...`);
+        try {
+          await telegram.sendMessage({
+            chat_id: chatId,
+            text: textPart,
+            parse_mode: "HTML"
+          });
+          console.log(`Sent text chunk to Telegram: success`);
+        } catch (error) {
+          console.log(`Failed to send text chunk: ${error}`);
+        }
+        
+        // Show typing indicator to continue conversation flow
+        telegram.sendChatAction({ chat_id: chatId, action: "typing" });
+      }
     }
     
     // End the generation span with the output
     generation.end({
-      output: responseBuffer
+      output: responseBuffer,
+      metadata: {
+        chunkCount: chunkCount,
+        totalChars: responseBuffer.length
+      }
     });
-    
-    // Send any regular text response
-    if (responseBuffer.trim().length > 0) {
-      await telegram.sendMessage({
-        chat_id: chatId,
-        text: responseBuffer,
-        parse_mode: "HTML"
-      });
-    }
     
     // Update BRD session with current data (tools will have updated brdData)
     if (session.id) {
@@ -242,7 +302,7 @@ export async function handleTextMessage(
       });
     }
     
-    // Store assistant response if any
+    // Store the complete assistant response for context
     if (responseBuffer.trim().length > 0) {
       await datastore.createMessage({
         user_id: userId,
