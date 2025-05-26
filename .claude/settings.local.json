@@ -9,7 +9,8 @@
       "Bash(supabase logs:*)",
       "Bash(supabase:*)",
       "Bash(grep:*)",
-      "Bash(rg:*)"
+      "Bash(rg:*)",
+      "Bash(git checkout:*)"
     ],
     "deny": []
   }

@@ -1,15 +1,23 @@
-# BRDist - Business Requirements Document Telegram Bot
+# Cargo Bot - Telegram Shipping Cost Calculator
 
-BRDist is a Telegram bot that helps create comprehensive Business Requirements Documents (BRDs) through an intelligent conversational interface powered by Claude AI.
+A Telegram bot that analyzes cargo images and calculates shipping costs using AI-powered dimension estimation.
 
 ## Features
 
-- **Dynamic Question Flow**: AI-driven questions that adapt based on your project needs
-- **Intelligent Guidance**: Powered by AWS Bedrock with Claude 3.7 Sonnet
-- **Keyboard Suggestions**: Multiple-choice questions with easy-to-use buttons
-- **Session Management**: Tracks progress and saves your BRD data
-- **Document Generation**: Creates professional BRD documents on demand
-- **Flexible Architecture**: Supports both production and test environments
+- 🤖 AI-powered image analysis using Claude 3.7 Sonnet
+- 📏 Automatic dimension estimation (width, length, height)
+- ⚖️ Weight estimation based on cargo type
+- 💰 Instant shipping cost calculation
+- 🇷🇺 Russian language interface
+- 📸 Support for both compressed photos and image files
+
+## How It Works
+
+1. User sends a photo of their cargo
+2. Bot analyzes the image using Claude AI
+3. Dimensions and weight are estimated
+4. Shipping cost is calculated using the formula: `max(width × length × height × 1000, weight)`
+5. User receives detailed breakdown and cost estimate
 
 ## Getting Started
 
@@ -19,20 +27,18 @@ BRDist is a Telegram bot that helps create comprehensive Business Requirements D
 - Supabase account
 - AWS account with Bedrock access
 - Telegram Bot Token
-- Tavily API key for web search capabilities
 
 ### Environment Variables
 
-Create a `.env.local` file with:
+Configure these in your Supabase project:
 
 ```env
 SUPABASE_URL=your_supabase_url
 SUPABASE_SERVICE_ROLE_KEY=your_service_role_key
-BRDIST_BOT_API_TOKEN=your_telegram_bot_token
-AWS_REGION=your_aws_region
+CARGO_BOT_API_TOKEN=your_telegram_bot_token
+AWS_REGION=us-east-1
 AWS_ACCESS_KEY_ID=your_aws_access_key
 AWS_SECRET_ACCESS_KEY=your_aws_secret_key
-TAVILY_API_KEY=your_tavily_api_key
 FUNCTION_SECRET=your_webhook_secret
 ```
 
@@ -40,8 +46,8 @@ FUNCTION_SECRET=your_webhook_secret
 
 1. Clone the repository:
 ```bash
-git clone https://github.com/yourusername/brdist-telegram-bot.git
-cd brdist-telegram-bot
+git clone https://github.com/yourusername/cargo-telegram-bot.git
+cd cargo-telegram-bot
 ```
 
 2. Start Supabase locally:
@@ -49,61 +55,75 @@ cd brdist-telegram-bot
 supabase start
 ```
 
-3. Run database migrations:
+3. Deploy the function locally:
 ```bash
-supabase db push
-```
-
-4. Deploy the function locally:
-```bash
-supabase functions serve brdist --env-file ./supabase/.env.local
+supabase functions serve cargo --env-file ./supabase/.env.local
 ```
 
 ### Deployment
 
 Deploy to Supabase:
 ```bash
-supabase functions deploy brdist
+supabase functions deploy cargo
 ```
 
-Set up the Telegram webhook using the built-in command:
+Set up the Telegram webhook:
 ```bash
-curl -X POST "https://<your-project>.supabase.co/functions/v1/brdist/set-webhook?secret=<FUNCTION_SECRET>"
-```
-
-Or manually set the webhook URL:
-```
-https://<your-project>.supabase.co/functions/v1/brdist?secret=<FUNCTION_SECRET>
+curl -X POST "https://<your-project>.supabase.co/functions/v1/cargo/set-webhook?secret=<FUNCTION_SECRET>"
 ```
 
 ## Usage
 
 1. Start a conversation with your bot on Telegram
-2. Send `/start` to begin a new BRD session
-3. Answer the AI-generated questions about your project
-4. Use `/generate` to create your final BRD document
+2. Send `/start` to see instructions
+3. Send a photo of your cargo
+4. Receive dimension analysis and cost estimate
 
-## Architecture
+## Bot Commands
 
-BRDist uses a clean architecture with adapter patterns for flexibility:
+- `/start` - Welcome message and instructions
 
-- **TelegramAdapter**: Handles Telegram API interactions
-- **DatastoreAdapter**: Manages data persistence
-- **Claude AI Integration**: Dynamic question generation and document creation
-- **Supabase Edge Functions**: Serverless webhook handler
+## Cost Calculation Formula
+
+The shipping cost is calculated as:
+
+```
+Cost = max(Volume Cost, Weight Cost)
+
+Where:
+- Volume Cost = Width(m) × Length(m) × Height(m) × 1000
+- Weight Cost = Weight(kg)
+```
+
+## Example Usage
+
+1. Send `/start` to the bot
+2. Send a photo of your cargo
+3. Receive dimension analysis and cost estimate
+4. Get packaging tips or contact support
+
+## Technical Stack
+
+- **Runtime**: Deno (Supabase Edge Functions)
+- **AI Model**: Claude 3.7 Sonnet via AWS Bedrock
+- **Language**: TypeScript
+- **Bot Platform**: Telegram Bot API
+
+## Project Structure
+
+```
+supabase/
+└── functions/
+    └── cargo/
+        └── index.ts    # Main bot logic
+```
 
 ## Testing
 
-Run unit tests:
-```bash
-cd supabase/functions/brdist
-deno task test
-```
-
-Run integration tests (requires AWS credentials):
-```bash
-RUN_INTEGRATION_TESTS=true deno task test:integration
-```
+The bot includes error handling for:
+- Invalid images
+- Network failures
+- AI processing errors
 
 ## Contributing
 
@@ -115,4 +135,4 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## Support
 
-For issues and feature requests, please use the [GitHub Issues](https://github.com/yourusername/brdist-telegram-bot/issues) page.
+For issues and feature requests, please use the [GitHub Issues](https://github.com/yourusername/cargo-telegram-bot/issues) page.
