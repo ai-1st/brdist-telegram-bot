@@ -6,7 +6,7 @@ import { TavilyClient } from "https://esm.sh/@agentic/tavily";
 import { createAISDKTools } from 'https://esm.sh/@agentic/ai-sdk';
 import { z } from 'https://esm.sh/zod';
 import { Langfuse } from "https://esm.sh/langfuse";
-import { SYSTEM_PROMPT, SPEC_GENERATION_PROMPT, BRD_GENERATION_PROMPT, WELCOME_MESSAGE } from './prompts.ts';
+import { SYSTEM_PROMPT, SPEC_GENERATION_PROMPT, BRD_GENERATION_PROMPT, WELCOME_MESSAGE, IMAGE_ANALYSIS_PROMPT } from './prompts.ts';
 import { 
   TelegramAdapter, 
   ProductionTelegramAdapter, 
@@ -17,6 +17,16 @@ import {
   SupabaseDatastoreAdapter,
   InMemoryDatastoreAdapter
 } from './datastore-adapter.ts';
+
+// Helper function to escape HTML entities
+function escapeHtml(text: string): string {
+  return text
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
 
 // Initialize Langfuse
 export function createLangfuseClient() {
@@ -341,7 +351,7 @@ export async function handleTextMessage(
       await datastore.updateBRDSession(session.id, { status: 'completed' });
       await telegram.sendMessage({
         chat_id: chatId,
-        text: "🎉 Great! I have collected comprehensive information about your project.\n\nYou can now:\n• Use /spec to generate a detailed project specification (spec.md)\n• Use /generate to create a formal Business Requirements Document\n• Continue our conversation to add more details",
+        text: "Great! I have collected comprehensive information about your project.\n\nYou can now:\n• Use /spec to generate a detailed project specification (spec.md)\n• Use /generate to create a formal Business Requirements Document\n• Continue our conversation to add more details",
         parse_mode: "HTML"
       });
     }
@@ -456,7 +466,7 @@ export async function handleClearCommand(
     
     const messageSent = await telegram.sendMessage({
       chat_id: chatId,
-      text: `🆕 <b>New session started!</b>\n\n${WELCOME_MESSAGE}`,
+      text: `<b>New session started!</b>\n\n${WELCOME_MESSAGE}`,
       parse_mode: "HTML"
     });
     
@@ -474,7 +484,7 @@ export async function handleClearCommand(
     
     await telegram.sendMessage({
       chat_id: chatId,
-      text: "❌ Sorry, I couldn't create a new session. Please try again.",
+      text: "Sorry, I couldn't create a new session. Please try again.",
       parse_mode: "HTML"
     });
   } finally {
@@ -500,18 +510,18 @@ export async function handleBrdsCommand(
     if (!sessions || sessions.length === 0) {
       await telegram.sendMessage({
         chat_id: chatId,
-        text: "📝 You don't have any BRD sessions yet. Use /start to begin a new one!",
+        text: "You don't have any BRD sessions yet. Use /start to begin a new one!",
         parse_mode: "HTML"
       });
       return;
     }
     
     // Format sessions list
-    let sessionsList = "📋 <b>Your BRD Sessions:</b>\n\n";
+    let sessionsList = "<b>Your BRD Sessions:</b>\n\n";
     sessions.forEach((session, index) => {
       const createdAt = new Date(session.created_at).toLocaleDateString();
       const dataCount = Object.keys(session.brd_data || {}).length;
-      const status = session.status === 'active' ? '🟢' : session.status === 'completed' ? '✅' : '📤';
+      const status = session.status === 'active' ? '[ACTIVE]' : session.status === 'completed' ? '[COMPLETED]' : '[EXPORTED]';
       
       sessionsList += `${status} <b>Session ${index + 1}</b> (${createdAt})\n`;
       sessionsList += `   Status: ${session.status}\n`;
@@ -524,7 +534,7 @@ export async function handleBrdsCommand(
       sessionsList += `   ID: <code>${session.id}</code>\n\n`;
     });
     
-    sessionsList += "💡 <i>To switch to a session, reply with its ID</i>";
+    sessionsList += "<i>To switch to a session, reply with its ID</i>";
     
     await telegram.sendMessage({
       chat_id: chatId,
@@ -536,7 +546,7 @@ export async function handleBrdsCommand(
     console.error(`Error listing sessions: ${error}`);
     await telegram.sendMessage({
       chat_id: chatId,
-      text: "❌ Sorry, I couldn't retrieve your sessions. Please try again.",
+      text: "Sorry, I couldn't retrieve your sessions. Please try again.",
       parse_mode: "HTML"
     });
   }
@@ -562,7 +572,7 @@ export async function handleSpecCommand(
   if (!session || !session.brd_data || Object.keys(session.brd_data).length < 5) {
     await telegram.sendMessage({
       chat_id: chatId,
-      text: "⚠️ I need more information before generating the specification. Please continue our conversation, or type /start to begin a new session.",
+      text: "I need more information before generating the specification. Please continue our conversation, or type /start to begin a new session.",
       parse_mode: "HTML"
     });
     return;
@@ -571,7 +581,7 @@ export async function handleSpecCommand(
   // Send initial message to acknowledge the command
   await telegram.sendMessage({
     chat_id: chatId,
-    text: "🔄 Generating your project specification. This may take a moment...",
+    text: "Generating your project specification. This may take a moment...",
     parse_mode: "HTML"
   });
   
@@ -632,7 +642,7 @@ export async function handleSpecCommand(
   if (!spec) {
     await telegram.sendMessage({
       chat_id: chatId,
-      text: "❌ Sorry, I couldn't save the specification. Please try again.",
+      text: "Sorry, I couldn't save the specification. Please try again.",
       parse_mode: "HTML"
     });
     return;
@@ -644,7 +654,7 @@ export async function handleSpecCommand(
     // Send first chunk with title
     await telegram.sendMessage({
       chat_id: chatId,
-      text: `📋 <b>${title}</b>\n\n${specContent.substring(0, maxLength - 100)}...`,
+      text: `<b>${title}</b>\n\n${specContent.substring(0, maxLength - 100)}...`,
       parse_mode: "HTML"
     });
     
@@ -660,13 +670,13 @@ export async function handleSpecCommand(
   } else {
     await telegram.sendMessage({
       chat_id: chatId,
-      text: `📋 <b>${title}</b>\n\n${specContent}`,
+      text: `<b>${title}</b>\n\n${specContent}`,
       parse_mode: "HTML"
     });
   }
   
   // Send completion message
-  const completionMsg = `\n✅ <b>Project Specification Generated!</b>\n\nYour spec.md has been created and saved. You can now:\n• Use this spec to guide development\n• Share it with your development team\n• Type /generate for a formal BRD\n• Type /start to create another project`;
+  const completionMsg = `\n<b>Project Specification Generated!</b>\n\nYour spec.md has been created and saved. You can now:\n• Use this spec to guide development\n• Share it with your development team\n• Type /generate for a formal BRD\n• Type /start to create another project`;
   
   await telegram.sendMessage({
     chat_id: chatId,
@@ -698,7 +708,7 @@ export async function handleGenerateCommand(
   if (!session || !session.brd_data || Object.keys(session.brd_data).length < 5) {
     await telegram.sendMessage({
       chat_id: chatId,
-      text: "⚠️ I need more information before generating the BRD. Please continue our conversation, or type /start to begin a new session.",
+      text: "I need more information before generating the BRD. Please continue our conversation, or type /start to begin a new session.",
       parse_mode: "HTML"
     });
     return;
@@ -769,7 +779,7 @@ export async function handleGenerateCommand(
   // Send completion message
   const completionMsg = `
 
-✅ <b>BRD Generated Successfully!</b>
+<b>BRD Generated Successfully!</b>
 
 Your Business Requirements Document is ready. You can now:
 • Share this with stakeholders
@@ -783,12 +793,161 @@ Your Business Requirements Document is ready. You can now:
   });
 }
 
+// Function to handle image processing
+export async function handleImageMessage(
+  message: any,
+  telegram: TelegramAdapter,
+  datastore: DatastoreAdapter
+) {
+  const userId = message.from.id;
+  const chatId = message.chat.id;
+  const username = message.from.username || `user_${userId}`;
+  
+  console.log(`[handleImageMessage] Processing image from user ${userId}`);
+  
+  try {
+    // Send initial acknowledgment
+    await telegram.sendMessage({
+      chat_id: chatId,
+      text: "Processing your image...",
+      parse_mode: "HTML"
+    });
+    
+    // Get the largest photo
+    const photoArray = message.photo;
+    const largestPhoto = photoArray[photoArray.length - 1];
+    const fileId = largestPhoto.file_id;
+    
+    // Get file info from Telegram
+    const botToken = Deno.env.get("BRDIST_BOT_API_TOKEN");
+    const fileInfoResponse = await fetch(`https://api.telegram.org/bot${botToken}/getFile?file_id=${fileId}`);
+    const fileInfo = await fileInfoResponse.json();
+    
+    if (!fileInfo.ok || !fileInfo.result) {
+      throw new Error("Failed to get file info from Telegram");
+    }
+    
+    // Download the file
+    const filePath = fileInfo.result.file_path;
+    const fileUrl = `https://api.telegram.org/file/bot${botToken}/${filePath}`;
+    const fileResponse = await fetch(fileUrl);
+    const fileBuffer = await fileResponse.arrayBuffer();
+    
+    // Calculate MD5 hash for filename
+    const crypto = globalThis.crypto;
+    const hashBuffer = await crypto.subtle.digest('SHA-256', fileBuffer);
+    const hashArray = Array.from(new Uint8Array(hashBuffer));
+    const hashHex = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+    const md5 = hashHex.substring(0, 32); // Use first 32 chars as pseudo-MD5
+    
+    // Determine file extension
+    const extension = filePath.split('.').pop() || 'jpg';
+    const s3Key = `upload/${username}/${md5}.${extension}`;
+    
+    // Upload to S3 using Supabase Storage
+    const supabase = createSupabaseClient();
+    const { data: uploadData, error: uploadError } = await supabase.storage
+      .from('brdist-telegram-bot')
+      .upload(s3Key, fileBuffer, {
+        contentType: `image/${extension}`,
+        upsert: true
+      });
+    
+    if (uploadError) {
+      console.error(`Error uploading to S3: ${uploadError}`);
+      throw new Error("Failed to upload image");
+    }
+    
+    // Get public URL
+    const { data: { publicUrl } } = supabase.storage
+      .from('brdist-telegram-bot')
+      .getPublicUrl(s3Key);
+    
+    console.log(`[handleImageMessage] Image uploaded to: ${publicUrl}`);
+    
+    // Now analyze the image with Claude
+    const langfuse = createLangfuseClient();
+    const trace = langfuse.trace({
+      name: "brdist-image-analysis",
+      userId: userId.toString(),
+      metadata: {
+        chatId: chatId,
+        imageUrl: publicUrl,
+        caption: message.caption
+      }
+    });
+    
+    try {
+      // Create the image analysis request
+      const messages = [
+        {
+          role: "system" as const,
+          content: IMAGE_ANALYSIS_PROMPT
+        },
+        {
+          role: "user" as const,
+          content: [
+            {
+              type: "text" as const,
+              text: message.caption || "Please analyze this image for the BRD."
+            },
+            {
+              type: "image" as const,
+              image: new URL(publicUrl)
+            }
+          ]
+        }
+      ];
+      
+      // Use Claude to analyze the image
+      const result = await streamText({
+        model: getModel(),
+        messages
+      });
+      
+      let analysisText = "";
+      for await (const chunk of result.textStream) {
+        analysisText += chunk;
+      }
+      
+      trace.update({
+        output: analysisText
+      });
+      
+      // Store the image URL and analysis in the conversation
+      const imageContext = `[Image uploaded: ${publicUrl}]\n${message.caption ? `Caption: ${message.caption}\n` : ''}Analysis: ${analysisText}`;
+      
+      // Process as a text message with the full context
+      const modifiedMessage = {
+        ...message,
+        text: imageContext
+      };
+      
+      await handleTextMessage(modifiedMessage, telegram, datastore);
+      
+    } finally {
+      await langfuse.flushAsync();
+    }
+    
+  } catch (error) {
+    console.error(`Error processing image: ${error}`);
+    await telegram.sendMessage({
+      chat_id: chatId,
+      text: "Sorry, I couldn't process your image. Please try again or describe what the image shows.",
+      parse_mode: "HTML"
+    });
+  }
+}
+
 // Process webhook message with adapter
 export async function processWebhookMessage(
   message: any, 
   telegram: TelegramAdapter,
   datastore: DatastoreAdapter
 ) {
+  console.log(`[processWebhookMessage] Processing message type: ${message.text ? 'text' : message.photo ? 'photo' : 'other'}`);
+  console.log(`[processWebhookMessage] Has photo: ${!!message.photo}, photo array length: ${message.photo?.length}`);
+  
   // Handle commands
   if (message.text && message.text.startsWith("/")) {
     if (message.text.startsWith("/start")) {
@@ -800,17 +959,14 @@ export async function processWebhookMessage(
     } else if (message.text.startsWith("/generate")) {
       await handleGenerateCommand(message, telegram, datastore);
     } else if (message.text.startsWith("/spec")) {
-      try {
-        await handleSpecCommand(message, telegram, datastore);
-      } catch (error) {
-        console.error(`Error in handleSpecCommand: ${error}`);
-        console.error(`Error stack: ${error.stack}`);
-        await telegram.sendMessage({
-          chat_id: message.chat.id,
-          text: "❌ Sorry, I encountered an error while generating the specification. Please try again.",
-          parse_mode: "HTML"
-        });
-      }
+      console.log(`[WEBHOOK] /spec command received - temporarily disabled`);
+      await telegram.sendMessage({
+        chat_id: message.chat.id,
+        text: "The /spec command is temporarily disabled for maintenance. Please check back later.",
+        parse_mode: "HTML"
+      });
+      // Return immediately to ensure webhook success
+      return;
     } else {
       await telegram.sendMessage({
         chat_id: message.chat.id,
@@ -823,6 +979,37 @@ export async function processWebhookMessage(
     const promise = handleTextMessage(message, telegram, datastore);
     // Use promise.catch to handle errors without blocking
     promise.catch((err)=>console.error(`Error in async message handling: ${err}`));
+  } else if (message.photo) {
+    // Handle photo messages (compressed images)
+    console.log(`[WEBHOOK] Photo received from user ${message.from.id}`);
+    const promise = handleImageMessage(message, telegram, datastore);
+    promise.catch((err)=>console.error(`Error in async image handling: ${err}`));
+  } else if (message.document && message.document.mime_type && message.document.mime_type.startsWith('image/')) {
+    // Handle image documents (uncompressed images sent as files)
+    console.log(`[WEBHOOK] Image document received from user ${message.from.id}`);
+    console.log(`[WEBHOOK] Document mime type: ${message.document.mime_type}`);
+    
+    // Convert document format to photo-like format for processing
+    const imageMessage = {
+      ...message,
+      photo: [{
+        file_id: message.document.file_id,
+        file_unique_id: message.document.file_unique_id,
+        file_size: message.document.file_size
+      }]
+    };
+    
+    const promise = handleImageMessage(imageMessage, telegram, datastore);
+    promise.catch((err)=>console.error(`Error in async document image handling: ${err}`));
+  } else {
+    // Handle other message types (stickers, non-image documents, etc.)
+    console.log(`[WEBHOOK] Unsupported message type received`);
+    console.log(`[WEBHOOK] Message has: text=${!!message.text}, photo=${!!message.photo}, document=${!!message.document}, document_mime=${message.document?.mime_type}`);
+    await telegram.sendMessage({
+      chat_id: message.chat.id,
+      text: "I can only process text messages and images at the moment. Please send a text message or an image (photo or image file) with a caption describing your project.",
+      parse_mode: "HTML"
+    });
   }
 }
 
@@ -984,6 +1171,8 @@ if (import.meta.main) {
         console.log(`[WEBHOOK MESSAGE] From: ${message.from?.username || message.from?.id}`);
         console.log(`[WEBHOOK MESSAGE] Chat: ${message.chat?.id}`);
         console.log(`[WEBHOOK MESSAGE] Text: "${message.text}"`);
+        console.log(`[WEBHOOK MESSAGE] Message fields: ${Object.keys(message).join(', ')}`);
+        console.log(`[WEBHOOK MESSAGE] Has photo field: ${message.hasOwnProperty('photo')}, photo value: ${message.photo}`);
         console.log(`[WEBHOOK MESSAGE] Full message object: ${JSON.stringify(message, null, 2)}`)
         
         // Create production adapters

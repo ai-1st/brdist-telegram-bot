@@ -154,19 +154,32 @@ Use HTML formatting throughout. Be comprehensive but concise.
 Intelligently expand on the provided information to create a professional document.
 If some sections lack specific data, make reasonable professional assumptions and note them.`;
 
-export const WELCOME_MESSAGE = `💼 <b>Welcome to BRDist - Project Specification & BRD Assistant!</b>
+export const IMAGE_ANALYSIS_PROMPT = `You are analyzing an image that was sent as part of a Business Requirements Document conversation. 
+
+Please provide a detailed description of what you see in the image, focusing on:
+1. Overall content and layout
+2. Any text, diagrams, or UI elements visible
+3. Technical or business-relevant details
+4. How this image relates to project requirements or specifications
+
+Be specific and thorough in your description, as this will be used to understand the user's project requirements.
+
+After describing the image, acknowledge its relevance to the project and ask a follow-up question if needed.`;
+
+export const WELCOME_MESSAGE = `<b>Welcome to BRDist - Project Specification & BRD Assistant!</b>
 
 I'll help you create comprehensive project documentation through our conversation.
 
-🎯 <b>Here's how it works:</b>
+<b>Here's how it works:</b>
 • Tell me about your business idea or project
 • I'll ask detailed questions to understand your needs
 • Answer my questions (I'll provide options when helpful)
+• Send images of mockups, diagrams, or examples when relevant
 • Once we've gathered enough information:
   - Use /spec to generate a technical project specification
   - Use /generate to create a formal BRD
 
-📋 <b>Commands:</b>
+<b>Commands:</b>
 • /clear - Start a new session
 • /brds - View and switch between your sessions
 • /spec - Generate project specification
