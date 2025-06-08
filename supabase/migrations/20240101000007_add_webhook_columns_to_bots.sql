@@ -1,0 +1,7 @@
+-- Add webhook-related columns to bots table
+ALTER TABLE bots
+ADD COLUMN IF NOT EXISTS tg_webhook_url TEXT,
+ADD COLUMN IF NOT EXISTS tg_webhook_secret TEXT,
+ADD COLUMN IF NOT EXISTS model TEXT NOT NULL DEFAULT 'gpt-3.5-turbo',
+ADD COLUMN IF NOT EXISTS temperature NUMERIC NOT NULL DEFAULT 0.7,
+ADD COLUMN IF NOT EXISTS max_tokens INTEGER NOT NULL DEFAULT 1000; 

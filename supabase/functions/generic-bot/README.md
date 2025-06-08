@@ -1,90 +1,30 @@
-# Generic Bot - Functional Architecture
+# Generic Telegram Bot
 
-A refactored Telegram bot system using functional programming principles instead of classes. The system supports multiple bots distinguished by their `secret_string` parameter and loads configuration from the database.
+A configurable Telegram bot that runs as a Supabase Edge Function. This bot can be configured through the database to provide custom system prompts, welcome/help messages, and integrates with Claude AI for intelligent responses.
 
 ## Architecture
 
-### Modules
+The bot has been rebuilt with a clean, modular architecture:
 
-1. **`dal.ts`** - Database Access Layer
-   - `loadBotConfig(secretString)` - Load bot configuration by secret
-   - `getChatHistory(userId, chatId, botId)` - Retrieve chat history
-   - `addMessageToHistory(message)` - Save message to database
-   - `clearChatHistory(userId, chatId, botId)` - Clear chat history
+- **`index.ts`** - Main entry point handling webhooks, commands, and CORS
+- **`dal.ts`** - Data Access Layer for all database operations  
+- **`reply.ts`** - Streaming response handler for real-time Telegram messages
 
-2. **`telegram.ts`** - Telegram API Functions
-   - `sendTelegramMessage(botToken, chatId, text, replyMarkup?)` - Send messages
-   - `sendTelegramPhoto(botToken, chatId, photoUrl, caption?)` - Send photos
-   - `sendChatAction(botToken, chatId, action?)` - Send typing indicators
-   - `getFileUrl(botToken, fileId)` - Get file URLs from Telegram
-   - `setWebhook(botToken, webhookUrl)` - Configure webhooks
-   - `processStreamLine(line, botToken, chatId)` - Process streaming responses
+## Features
 
-3. **`llm.ts`** - LLM Integration Functions
-   - `generateResponse(messages, config?)` - Generate streaming responses
-   - `processImageWithLLM(imageUrl, caption, systemPrompt, config?)` - Analyze images
-   - `messagesToChatMessages(messages, systemPrompt)` - Convert database messages
-   - `createWelcomeMessage(botName, userName?)` - Generate welcome messages
-   - `createHelpMessage()` - Generate help text
-
-4. **`handler.ts`** - Main Request Handler
-   - `handleWebhook(request)` - Process Telegram webhooks
-   - `handleSetWebhook(request)` - Configure webhook endpoints
-   - Individual handlers for start, help, clear, text, and image messages
-
-5. **`index.ts`** - Entry Point
-   - Simple import of the main handler
-
-## Key Features
-
-### Multi-Bot Support
-- Each bot is identified by its `secret_string` parameter in the URL
-- Bot configuration is loaded from the database (`bots` table)
-- System prompt comes from `bot.system_prompt` field
-- Telegram token is linked via `tg_bot_keys` table
-
-### Customizable Messages
-- Welcome and help messages are stored in the database
-- Support for placeholder variables: `{bot_name}` and `{user_name}`
-- Each bot can have unique welcome and help messages
-- Messages are personalized when sent to users
-
-### Database Integration
-- Chat history is persisted to the `messages` table
-- Messages are linked to specific bots via `bot_id`
-- Automatic history management with configurable limits
-
-### Functional Design
-- No classes - only pure functions
-- Easy to test individual functions
-- Clear separation of concerns
-- Dependency injection through function parameters
-
-## Usage
-
-### Setting Up a Webhook
-```
-GET/POST /functions/v1/generic-bot/set-webhook?secret=BOT_SECRET_STRING
-```
-
-### Webhook Endpoint
-```
-POST /functions/v1/generic-bot?secret=BOT_SECRET_STRING
-```
-
-## Environment Variables
-
-Required:
-- `SUPABASE_URL` - Supabase project URL
-- `SUPABASE_SERVICE_ROLE_KEY` - Service role key for database access
-- `AWS_REGION` - AWS region for Bedrock
-- `AWS_ACCESS_KEY_ID` - AWS access key
-- `AWS_SECRET_ACCESS_KEY` - AWS secret key
-
-Optional:
-- `TAVILY_API_KEY` - For web search functionality
+- **Streaming Responses**: Messages are sent line-by-line as the LLM generates them
+- **Special Commands**: 
+  - `TG_IMAGE` - Send images with captions
+  - `TG_CONCLUSION` - Send conclusion with suggestion buttons
+- **Image Processing**: Analyze images sent by users
+- **Web Search**: Optional Tavily integration for current information
+- **Command Support**: `/start`, `/help`, `/clear`
+- **Conversation History**: Maintains chat context in database
+- **Multi-Bot Support**: Each bot identified by unique secret string
 
 ## Database Schema
+
+The bot uses these tables:
 
 ### Bots Table
 ```sql
@@ -107,11 +47,11 @@ CREATE TABLE bots (
 CREATE TABLE messages (
   id BIGSERIAL PRIMARY KEY,
   user_id BIGINT NOT NULL,
-  chat_id BIGINT NOT NULL,
+  chat_id TEXT NOT NULL,
   role TEXT NOT NULL CHECK (role IN ('user', 'assistant', 'system')),
   message_text TEXT NOT NULL,
   bot_id UUID REFERENCES bots(id),
-  tg_bot_key_id UUID REFERENCES tg_bot_keys(id),
+  user_email TEXT NOT NULL,
   created_at TIMESTAMPTZ DEFAULT now()
 );
 ```
@@ -128,34 +68,38 @@ CREATE TABLE tg_bot_keys (
 );
 ```
 
-## Message Placeholders
-
-The welcome and help messages support the following placeholders:
-
-- `{bot_name}` - Replaced with the bot's name from the database
-- `{user_name}` - Replaced with the user's first name from Telegram (falls back to "there")
-
-### Example Templates
-
-**Welcome Message:**
-```
-👋 Hello {user_name}! I'm {bot_name}, your personal AI assistant. How can I help you today?
-```
-
-**Help Message:**
-```
-🤖 <b>{bot_name} Commands:</b>
-
-/start - Start fresh conversation
-/help - Show this help message  
-/clear - Clear chat history
-
-Just send me any message and I'll do my best to help!
+### Telegram Users Table
+```sql
+CREATE TABLE tg_users (
+  id BIGINT NOT NULL,
+  user_email TEXT NOT NULL,
+  first_name TEXT,
+  last_name TEXT,
+  username TEXT,
+  is_bot BOOLEAN NOT NULL DEFAULT false,
+  language_code TEXT,
+  created_at TIMESTAMPTZ DEFAULT now(),
+  updated_at TIMESTAMPTZ DEFAULT now(),
+  CONSTRAINT tg_users_pkey PRIMARY KEY (id, user_email)
+);
 ```
 
-## Example Usage
+## Environment Variables
 
-1. Create a bot in the database:
+Required:
+- `SUPABASE_URL` - Your Supabase project URL
+- `SUPABASE_SERVICE_ROLE_KEY` - Service role key for database access
+- `AWS_REGION` - AWS region for Bedrock
+- `AWS_ACCESS_KEY_ID` - AWS access key
+- `AWS_SECRET_ACCESS_KEY` - AWS secret key
+
+Optional:
+- `TAVILY_API_KEY` - For web search functionality
+
+## Usage
+
+### 1. Create a Bot
+
 ```sql
 INSERT INTO bots (
   name, 
@@ -167,46 +111,84 @@ INSERT INTO bots (
   help_message
 )
 VALUES (
-  'My Bot', 
-  'You are a helpful assistant.', 
+  'My Assistant', 
+  'You are a helpful AI assistant. Use TG_IMAGE to send images and TG_CONCLUSION for suggestions.', 
   'my-secret-123', 
   true, 
   'user@example.com',
-  '👋 Hello {user_name}! I''m {bot_name}, your personal AI assistant. How can I help you today?',
-  '🤖 <b>{bot_name} Commands:</b>\n\n/start - Start fresh\n/help - Show this help\n/clear - Clear history\n\nJust send me any message!'
+  '👋 Hello {user_name}! I''m {bot_name}, your AI assistant.',
+  '🤖 <b>{bot_name} Commands:</b>\n\n/start - Start fresh\n/help - Show help\n/clear - Clear history'
 );
 ```
 
-2. Link a Telegram token:
+### 2. Link Telegram Token
+
 ```sql
 INSERT INTO tg_bot_keys (user_email, tg_token, linked_bot)
 VALUES ('user@example.com', 'YOUR_BOT_TOKEN', 'bot-id-from-step-1');
 ```
 
-3. Set the webhook:
-```
-POST /functions/v1/generic-bot/set-webhook?secret=my-secret-123
-```
-
-4. Bot is ready to receive messages at:
-```
-/functions/v1/generic-bot?secret=my-secret-123
-```
-
-## Database Migration
-
-To add the welcome and help message columns to existing installations, run the migration:
+### 3. Deploy Function
 
 ```bash
-supabase migration up
+supabase functions deploy generic-bot
 ```
 
-This will add the `welcome_message` and `help_message` columns to the `bots` table with sensible defaults.
+### 4. Set Webhook
+
+Make a request to:
+```
+https://<project-ref>.supabase.co/functions/v1/generic-bot/set-webhook?secret=my-secret-123
+```
+
+### 5. Bot Ready
+
+Your bot will receive messages at:
+```
+https://<project-ref>.supabase.co/functions/v1/generic-bot?secret=my-secret-123
+```
+
+## System Prompt Format
+
+The LLM is instructed to use special commands:
+
+```
+You must use special commands in your response:
+1. To send an image: TG_IMAGE image_url; image_caption
+2. To send a conclusion with suggestions: TG_CONCLUSION conclusion_text; suggestion1; suggestion2; suggestion3
+
+Use HTML for text formatting.
+```
+
+## Message Placeholders
+
+Welcome and help messages support:
+- `{bot_name}` - Bot's name from database
+- `{user_name}` - User's first name from Telegram
+
+## Development
+
+Local testing:
+```bash
+supabase functions serve generic-bot --env-file ./supabase/.env.local
+```
+
+Type checking:
+```bash
+deno check index.ts
+```
+
+## CORS Configuration
+
+The function uses origin reflection for CORS:
+- Reflects the origin header for compatibility
+- Supports credentials
+- Works with any domain
 
 ## Benefits
 
-- **Testable**: Each function can be tested in isolation
-- **Maintainable**: Clear separation of concerns
-- **Scalable**: Supports multiple bots from single deployment
-- **Configurable**: System prompts and behavior stored in database
-- **Functional**: No classes, just pure functions 
+- **Clean Architecture**: Simple 3-file structure
+- **Real-time Streaming**: Responsive user experience
+- **Multi-Bot Support**: Single deployment, multiple bots
+- **Database Configuration**: Easy bot management
+- **Type Safe**: Full TypeScript support
