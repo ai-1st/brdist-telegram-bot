@@ -393,11 +393,17 @@ async function handleWebhook(request: Request): Promise<Response> {
     const update: TelegramUpdate = await request.json();
     
     // Process message if present
-    if (update.message) {
-      await processMessage(update.message, botConfig);
+    if (update.message) {        
+      /*
+      https://supabase.com/docs/guides/functions/background-tasks
+      You can use EdgeRuntime.waitUntil(promise) to explicitly mark 
+      background tasks. The Function instance continues to run until 
+      the promise provided to waitUntil completes.
+      */
+      EdgeRuntime.waitUntil(processMessage(update.message, botConfig));
     }
     
-    console.log('[handleWebhook] Webhook processing completed successfully');
+    console.log('[handleWebhook] Webhook processing is handled in background');
     return new Response("OK", { status: 200 });
     
   } catch (error) {

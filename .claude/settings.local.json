@@ -10,7 +10,8 @@
       "Bash(supabase:*)",
       "Bash(grep:*)",
       "Bash(rg:*)",
-      "Bash(deno check:*)"
+      "Bash(deno check:*)",
+      "Bash(deno run:*)"
     ],
     "deny": []
   },
