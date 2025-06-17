@@ -100,6 +100,19 @@ export interface TelegramUser {
   language_code?: string;
 }
 
+export interface Webtool {
+  id: string;
+  user_email: string;
+  bot_id: string;
+  name: string;
+  url: string;
+  description: string;
+  context_config: Record<string, any>;
+  is_enabled: boolean;
+  created_at?: string;
+  updated_at?: string;
+}
+
 // Get Supabase client
 function getSupabaseClient() {
   const supabaseUrl = Deno.env.get('SUPABASE_URL');
@@ -331,4 +344,30 @@ export function personalizeHelpMessage(
   botName: string
 ): string {
   return template.replace(/\{bot_name\}/g, botName);
+}
+
+// Get webtools for a bot
+export async function getWebtoolsForBot(botId: string): Promise<Webtool[]> {
+  const supabase = getSupabaseClient();
+  
+  try {
+    console.log(`[getWebtoolsForBot] Fetching webtools for bot: ${botId}`);
+    
+    const { data, error } = await supabase
+      .from('webtools')
+      .select('*')
+      .eq('bot_id', botId)
+      .eq('is_enabled', true);
+    
+    if (error) {
+      console.error('[getWebtoolsForBot] Error fetching webtools:', error);
+      return [];
+    }
+    
+    console.log(`[getWebtoolsForBot] Found ${data?.length || 0} enabled webtools`);
+    return data || [];
+  } catch (error) {
+    console.error('[getWebtoolsForBot] Unexpected error:', error);
+    return [];
+  }
 }

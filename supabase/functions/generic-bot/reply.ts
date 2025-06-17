@@ -5,7 +5,8 @@ import { streamText, smoothStream } from 'https://esm.sh/ai@4.2.6';
 import { createAmazonBedrock } from 'https://esm.sh/@ai-sdk/amazon-bedrock';
 import { TavilyClient } from "https://esm.sh/@agentic/tavily";
 import { createAISDKTools } from 'https://esm.sh/@agentic/ai-sdk';
-import type { ChatMessage } from './dal.ts';
+import type { ChatMessage, Webtool } from './dal.ts';
+import { loadWebtoolsForBot } from '../_shared/webtools.ts';
 
 interface ReplyConfig {
   botApiKey: string;
@@ -15,6 +16,7 @@ interface ReplyConfig {
   awsSecretAccessKey?: string;
   tavilyApiKey?: string;
   systemPrompt: string;
+  webtools?: Webtool[];
 }
 
 interface TelegramReplyMarkup {
@@ -196,9 +198,18 @@ export async function reply(
   // Initialize tools
   let tools = {};
   
+  // Add Tavily search tools if API key is provided
   if (config.tavilyApiKey) {
     const tavily = new TavilyClient({ apiKey: config.tavilyApiKey });
-    tools = createAISDKTools(tavily);
+    tools = { ...tools, ...createAISDKTools(tavily) };
+  }
+  
+  // Add webtools if provided
+  if (config.webtools && config.webtools.length > 0) {
+    console.log(`[reply] Loading ${config.webtools.length} webtools`);
+    const webtoolsDict = await loadWebtoolsForBot(config.webtools);
+    tools = { ...tools, ...webtoolsDict };
+    console.log(`[reply] Total tools available: ${Object.keys(tools).length}`);
   }
   
   // Build messages array with system prompt
@@ -276,6 +287,23 @@ export async function processImageWithLLM(
   
   const model = bedrock("us.anthropic.claude-3-7-sonnet-20250219-v1:0");
   
+  // Initialize tools
+  let tools = {};
+  
+  // Add Tavily search tools if API key is provided
+  if (config.tavilyApiKey) {
+    const tavily = new TavilyClient({ apiKey: config.tavilyApiKey });
+    tools = { ...tools, ...createAISDKTools(tavily) };
+  }
+  
+  // Add webtools if provided
+  if (config.webtools && config.webtools.length > 0) {
+    console.log(`[processImageWithLLM] Loading ${config.webtools.length} webtools`);
+    const webtoolsDict = await loadWebtoolsForBot(config.webtools);
+    tools = { ...tools, ...webtoolsDict };
+    console.log(`[processImageWithLLM] Total tools available: ${Object.keys(tools).length}`);
+  }
+  
   let responseBuffer = "";
   
   try {
@@ -300,6 +328,7 @@ export async function processImageWithLLM(
           ]
         }
       ],
+      tools,
       maxSteps: 5,
       experimental_transform: smoothStream({
         delayInMs: 200,

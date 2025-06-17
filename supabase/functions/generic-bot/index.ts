@@ -9,6 +9,7 @@ import {
   personalizeWelcomeMessage,
   personalizeHelpMessage,
   upsertTelegramUser,
+  getWebtoolsForBot,
   type BotConfig,
   type ChatMessage
 } from './dal.ts';
@@ -274,6 +275,9 @@ async function processMessage(
       // Send typing indicator before LLM call
       await sendChatAction(botConfig.tg_token, chatId);
       
+      // Load webtools for this bot
+      const webtools = await getWebtoolsForBot(botConfig.id);
+      
       // Process image and get response
       const imageResponse = await processImageWithLLM(
         imageUrl,
@@ -283,7 +287,8 @@ async function processMessage(
           botApiKey: botConfig.tg_token,
           chatId: chatId,
           tavilyApiKey: Deno.env.get('TAVILY_API_KEY'),
-          systemPrompt: buildSystemPrompt(botConfig.system_prompt)
+          systemPrompt: buildSystemPrompt(botConfig.system_prompt),
+          webtools: webtools
         }
       );
       
@@ -334,13 +339,17 @@ async function processMessage(
       // Send typing indicator before LLM call
       await sendChatAction(botConfig.tg_token, chatId);
       
+      // Load webtools for this bot
+      const webtools = await getWebtoolsForBot(botConfig.id);
+      
       // Generate and stream response
       const assistantResponse = await reply(
         {
           botApiKey: botConfig.tg_token,
           chatId: chatId,
           tavilyApiKey: Deno.env.get('TAVILY_API_KEY'),
-          systemPrompt: buildSystemPrompt(botConfig.system_prompt)
+          systemPrompt: buildSystemPrompt(botConfig.system_prompt),
+          webtools: webtools
         },
         messages
       );
@@ -400,7 +409,8 @@ async function handleWebhook(request: Request): Promise<Response> {
       background tasks. The Function instance continues to run until 
       the promise provided to waitUntil completes.
       */
-      EdgeRuntime.waitUntil(processMessage(update.message, botConfig));
+      // Process message asynchronously without waiting
+      processMessage(update.message, botConfig);
     }
     
     console.log('[handleWebhook] Webhook processing is handled in background');
