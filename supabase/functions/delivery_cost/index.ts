@@ -33,17 +33,17 @@ const calculateCostSchema = {
   "properties": {
     "width": {
       "type": "number",
-      "description": "Width in meters",
+      "description": "Width in centimeters",
       "minimum": 0
     },
     "height": {
       "type": "number", 
-      "description": "Height in meters",
+      "description": "Height in centimeters",
       "minimum": 0
     },
     "length": {
       "type": "number",
-      "description": "Length in meters", 
+      "description": "Length in centimeters", 
       "minimum": 0
     },
     "weight": {
@@ -187,7 +187,12 @@ serve(async (req) => {
       // Use custom pricing table from config if provided, otherwise use default
       const pricingTable = body.config?.pricing_table || defaultPricingTable;
 
-      const volume = width * height * length;
+      // Convert centimeters to meters for volume calculation
+      const widthInMeters = width / 100;
+      const heightInMeters = height / 100;
+      const lengthInMeters = length / 100;
+      
+      const volume = widthInMeters * heightInMeters * lengthInMeters;
       const density = weight / volume;
       const price = calculatePrice(density, pricingTable);
       
@@ -199,10 +204,13 @@ serve(async (req) => {
       return new Response(
         JSON.stringify({
           volume: Math.round(volume * 1000) / 1000,
+          volume_unit: "m³",
           density: Math.round(density * 100) / 100,
+          density_unit: "kg/m³",
           price_per_kg: density < 100 ? null : price,
           price_per_m3: density < 100 ? price : null,
-          total_price: Math.round(totalPrice * 100) / 100
+          total_price: Math.round(totalPrice * 100) / 100,
+          currency: "USD"
         }),
         {
           headers: { ...corsHeaders, "Content-Type": "application/json" },
