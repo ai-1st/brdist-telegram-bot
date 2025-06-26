@@ -31,6 +31,7 @@ CREATE TABLE public.messages (
   bot_id uuid,
   tg_bot_key_id uuid,
   user_email text NOT NULL DEFAULT ''::text,
+  session integer NOT NULL DEFAULT 1,
   CONSTRAINT messages_pkey PRIMARY KEY (id),
   CONSTRAINT messages_bot_id_fkey FOREIGN KEY (bot_id) REFERENCES public.bots(id),
   CONSTRAINT messages_tg_bot_key_id_fkey FOREIGN KEY (tg_bot_key_id) REFERENCES public.tg_bot_keys(id)
@@ -89,6 +90,7 @@ export interface DbMessage {
   bot_id?: string;
   user_email: string;
   created_at?: string;
+  session?: number;
 }
 
 export interface TelegramUser {
@@ -107,7 +109,7 @@ export interface Webtool {
   name: string;
   url: string;
   description: string;
-  context_config: Record<string, any>;
+  context_config: Record<string, unknown>;
   is_enabled: boolean;
   created_at?: string;
   updated_at?: string;
@@ -174,22 +176,30 @@ export async function loadBotConfig(secretString: string): Promise<BotConfig | n
   }
 }
 
-// Get chat history
+// Get chat history for current active session
 export async function getChatHistory(
   userId: number, 
   chatId: string, 
-  botId: string, 
+  botId: string,
+  userEmail: string,
   limit: number = 20
 ): Promise<ChatMessage[]> {
   const supabase = getSupabaseClient();
   
   try {
+    // First, get the current session number
+    const currentSession = await getCurrentSession(userId, chatId, botId, userEmail);
+    
+    console.log(`[getChatHistory] Using session ${currentSession} for user ${userId} in chat ${chatId}`);
+    
     const { data, error } = await supabase
       .from('messages')
-      .select('role, message_text')
+      .select('role, message_text, created_at')
+      .eq('user_email', userEmail)
       .eq('user_id', userId)
       .eq('chat_id', chatId)
       .eq('bot_id', botId)
+      .eq('session', currentSession)
       .order('created_at', { ascending: false })
       .limit(limit);
     
@@ -198,8 +208,9 @@ export async function getChatHistory(
       return [];
     }
     
-    // Convert to ChatMessage format and reverse for chronological order
+    // Filter out /clear messages and convert to ChatMessage format
     return (data || [])
+      .filter(msg => msg.message_text !== '/clear')
       .reverse()
       .map(msg => ({
         role: msg.role as 'user' | 'assistant',
@@ -208,6 +219,54 @@ export async function getChatHistory(
   } catch (error) {
     console.error('Error in getChatHistory:', error);
     return [];
+  }
+}
+
+// Get current session number for a user/chat/bot combination
+async function getCurrentSession(
+  userId: number, 
+  chatId: string, 
+  botId: string,
+  userEmail: string
+): Promise<number> {
+  const supabase = getSupabaseClient();
+  
+  try {
+    // Get the latest message for this user/chat/bot
+    const { data: latestMessage, error } = await supabase
+      .from('messages')
+      .select('session, message_text, created_at')
+      .eq('user_email', userEmail)
+      .eq('user_id', userId)
+      .eq('chat_id', chatId)
+      .eq('bot_id', botId)
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .single();
+    
+    if (error || !latestMessage) {
+      // No messages found, start with session 1
+      console.log(`[getCurrentSession] No messages found, starting with session 1`);
+      return 1;
+    }
+    
+    const now = new Date();
+    const messageTime = new Date(latestMessage.created_at);
+    const hoursDiff = (now.getTime() - messageTime.getTime()) / (1000 * 60 * 60);
+    
+    // If last message was /clear or more than 24 hours ago, start new session
+    if (latestMessage.message_text === '/clear' || hoursDiff > 24) {
+      const newSession = latestMessage.session + 1;
+      console.log(`[getCurrentSession] Starting new session ${newSession} (last message: ${latestMessage.message_text}, hours ago: ${hoursDiff.toFixed(1)})`);
+      return newSession;
+    }
+    
+    // Continue with current session
+    console.log(`[getCurrentSession] Continuing with session ${latestMessage.session}`);
+    return latestMessage.session;
+  } catch (error) {
+    console.error('Error in getCurrentSession:', error);
+    return 1;
   }
 }
 
@@ -221,6 +280,14 @@ export async function addMessageToHistory(message: DbMessage): Promise<boolean> 
     // Ensure Telegram user exists
     await upsertTelegramUser(message.user_id, message.user_email);
     
+    // Get current session number if not provided
+    let sessionNumber = message.session;
+    if (!sessionNumber) {
+      sessionNumber = await getCurrentSession(message.user_id, message.chat_id, message.bot_id || '', message.user_email);
+    }
+    
+    console.log(`[addMessageToHistory] Using session ${sessionNumber}`);
+    
     // Add message
     const { error } = await supabase
       .from('messages')
@@ -230,7 +297,8 @@ export async function addMessageToHistory(message: DbMessage): Promise<boolean> 
         role: message.role,
         message_text: message.message_text,
         bot_id: message.bot_id,
-        user_email: message.user_email
+        user_email: message.user_email,
+        session: sessionNumber
       });
     
     if (error) {
@@ -246,33 +314,55 @@ export async function addMessageToHistory(message: DbMessage): Promise<boolean> 
   }
 }
 
-// Clear chat history
-export async function clearChatHistory(
+// Add /clear message to mark session as closed
+export async function addClearMessage(
   userId: number, 
   chatId: string, 
-  botId: string
+  botId: string,
+  userEmail: string
 ): Promise<boolean> {
   const supabase = getSupabaseClient();
   
   try {
+    // Get current session
+    const currentSession = await getCurrentSession(userId, chatId, botId, userEmail);
+    
+    console.log(`[addClearMessage] Adding /clear message for session ${currentSession}`);
+    
+    // Add /clear message to current session
     const { error } = await supabase
       .from('messages')
-      .delete()
-      .eq('user_id', userId)
-      .eq('chat_id', chatId)
-      .eq('bot_id', botId);
+      .insert({
+        user_id: userId,
+        chat_id: chatId,
+        role: 'user',
+        message_text: '/clear',
+        bot_id: botId,
+        user_email: userEmail,
+        session: currentSession
+      });
     
     if (error) {
-      console.error('Error clearing chat history:', error);
+      console.error('[addClearMessage] Error adding /clear message:', error);
       return false;
     }
     
-    console.log('[clearChatHistory] History cleared successfully');
+    console.log('[addClearMessage] /clear message added successfully');
     return true;
   } catch (error) {
-    console.error('Error in clearChatHistory:', error);
+    console.error('Error in addClearMessage:', error);
     return false;
   }
+}
+
+// Legacy function for backward compatibility - now just adds clear message
+export async function clearChatHistory(
+  userId: number, 
+  chatId: string, 
+  botId: string,
+  userEmail: string = ''
+): Promise<boolean> {
+  return await addClearMessage(userId, chatId, botId, userEmail);
 }
 
 // Upsert Telegram user

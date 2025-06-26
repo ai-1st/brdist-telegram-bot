@@ -49,6 +49,23 @@ interface TelegramMessage {
     mime_type?: string;
     file_size?: number;
   };
+  sticker?: {
+    file_id: string;
+    file_unique_id: string;
+    type?: string;
+    width?: number;
+    height?: number;
+    is_animated?: boolean;
+    is_video?: boolean;
+    file_size?: number;
+    thumbnail?: {
+      file_id: string;
+      file_unique_id: string;
+      file_size?: number;
+      width?: number;
+      height?: number;
+    };
+  };
   caption?: string;
 }
 
@@ -176,7 +193,8 @@ async function handleStartCommand(
   await clearChatHistory(
     message.from.id,
     message.chat.id.toString(),
-    botConfig.id
+    botConfig.id,
+    botConfig.user_email
   );
 }
 
@@ -205,7 +223,8 @@ async function handleClearCommand(
   await clearChatHistory(
     message.from.id,
     message.chat.id.toString(),
-    botConfig.id
+    botConfig.id,
+    botConfig.user_email
   );
   
   await sendTelegramMessage(
@@ -220,6 +239,8 @@ async function processMessage(
   message: TelegramMessage,
   botConfig: BotConfig
 ): Promise<void> {
+  console.log(`[processMessage] Starting message processing at ${new Date().toISOString()}`);
+  console.log(`[processMessage] Message:`, message);
   const userId = message.from.id;
   const chatId = message.chat.id;
   const chatIdStr = chatId.toString();
@@ -250,17 +271,19 @@ async function processMessage(
   await upsertTelegramUser(userId, botConfig.user_email, message.from);
   
   try {
-    // Handle image messages
-    if (message.photo || (message.document?.mime_type?.startsWith('image/'))) {
+    // Handle image messages (photos, image documents, and stickers)
+    if (message.photo || (message.document?.mime_type?.startsWith('image/')) || message.sticker) {
       await sendTelegramMessage(
         botConfig.tg_token,
         chatId,
-        "🔍 Analyzing image..."
+        message.sticker ? "🎨 Analyzing sticker..." : "🔍 Analyzing image..."
       );
       
       const fileId = message.photo 
         ? message.photo[message.photo.length - 1].file_id
-        : message.document!.file_id;
+        : message.document 
+        ? message.document.file_id
+        : message.sticker!.file_id;
       
       const imageUrl = await getFileUrl(botConfig.tg_token, fileId);
       if (!imageUrl) {
@@ -297,7 +320,7 @@ async function processMessage(
         user_id: userId,
         chat_id: chatIdStr,
         role: 'user',
-        message_text: message.caption || '[Image uploaded]',
+        message_text: message.caption || (message.sticker ? '[Sticker sent]' : '[Image uploaded]'),
         bot_id: botConfig.id,
         user_email: botConfig.user_email
       });
@@ -315,7 +338,7 @@ async function processMessage(
       // Handle text messages
       
       // Load chat history
-      const history = await getChatHistory(userId, chatIdStr, botConfig.id);
+      const history = await getChatHistory(userId, chatIdStr, botConfig.id, botConfig.user_email);
       
       // Add current message to history
       const messages: ChatMessage[] = [
