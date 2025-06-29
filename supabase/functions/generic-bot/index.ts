@@ -534,30 +534,64 @@ async function handleSetWebhook(request: Request): Promise<Response> {
     const webhookUrl = `https://${projectRef}.supabase.co/functions/v1/generic-bot?secret=${secretString}`;
     console.log(`[SET-WEBHOOK] Webhook URL: ${webhookUrl}`);
     
-    // Set webhook via Telegram API
-    const telegramUrl = `https://api.telegram.org/bot${botConfig.tg_token}/setWebhook`;
-    const response = await fetch(telegramUrl, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ url: webhookUrl })
-    });
+    // Set webhook for all telegram tokens
+    const results = [];
+    let allSuccessful = true;
     
-    const result = await response.json();
-    console.log(`[SET-WEBHOOK] Telegram response:`, result);
+    console.log(`[SET-WEBHOOK] Setting webhooks for ${botConfig.tg_tokens.length} token(s)`);
     
-    if (result.ok) {
-      console.log(`[SET-WEBHOOK] ✅ Webhook set successfully`);
-    } else {
-      console.log(`[SET-WEBHOOK] ❌ Failed to set webhook`);
+    for (let i = 0; i < botConfig.tg_tokens.length; i++) {
+      const token = botConfig.tg_tokens[i];
+      const tokenLabel = `Token ${i + 1}/${botConfig.tg_tokens.length} (${token.substring(0, 10)}...)`;
+      
+      console.log(`[SET-WEBHOOK] Processing ${tokenLabel}`);
+      
+      try {
+        const telegramUrl = `https://api.telegram.org/bot${token}/setWebhook`;
+        const response = await fetch(telegramUrl, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ url: webhookUrl })
+        });
+        
+        const result = await response.json();
+        console.log(`[SET-WEBHOOK] ${tokenLabel} response:`, result);
+        
+        results.push({
+          token: token.substring(0, 10) + '...',
+          success: result.ok,
+          response: result
+        });
+        
+        if (result.ok) {
+          console.log(`[SET-WEBHOOK] ✅ ${tokenLabel} webhook set successfully`);
+        } else {
+          console.log(`[SET-WEBHOOK] ❌ ${tokenLabel} failed to set webhook`);
+          allSuccessful = false;
+        }
+      } catch (error) {
+        console.error(`[SET-WEBHOOK] Exception for ${tokenLabel}:`, error);
+        results.push({
+          token: token.substring(0, 10) + '...',
+          success: false,
+          error: error instanceof Error ? error.message : 'Unknown error'
+        });
+        allSuccessful = false;
+      }
     }
     
+    const successCount = results.filter(r => r.success).length;
+    console.log(`[SET-WEBHOOK] Summary: ${successCount}/${results.length} webhooks set successfully`);
+    
     return new Response(JSON.stringify({
-      success: result.ok,
+      success: allSuccessful,
       webhook_url: webhookUrl,
       bot_name: botConfig.name,
-      telegram_response: result
+      tokens_processed: results.length,
+      successful_webhooks: successCount,
+      results: results
     }), {
-      status: result.ok ? 200 : 400,
+      status: allSuccessful ? 200 : 400,
       headers
     });
     

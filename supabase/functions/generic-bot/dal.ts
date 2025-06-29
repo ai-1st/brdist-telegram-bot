@@ -69,6 +69,7 @@ export interface BotConfig {
   id: string;
   name: string;
   tg_token: string;
+  tg_tokens: string[]; // Array of all tokens for this bot
   user_email: string;
   system_prompt: string;
   welcome_message: string;
@@ -135,35 +136,70 @@ export async function loadBotConfig(secretString: string): Promise<BotConfig | n
   const supabase = getSupabaseClient();
   
   try {
-    // Get bot by secret_string
-    const { data: bot, error: botError } = await supabase
+    console.log(`[loadBotConfig] Searching for bot with secret: ${secretString}`);
+    
+    // First, check how many bots match the secret (without .single())
+    const { data: allBots, error: allBotsError } = await supabase
       .from('bots')
       .select('*')
       .eq('secret_string', secretString)
-      .eq('is_active', true)
-      .single();
+      .eq('is_active', true);
     
-    if (botError || !bot) {
-      console.error('Bot not found or error:', botError);
+    console.log(`[loadBotConfig] Found ${allBots?.length || 0} active bots with this secret`);
+    if (allBots && allBots.length > 0) {
+      console.log(`[loadBotConfig] Bot details:`, allBots.map(b => ({ id: b.id, name: b.name, user_email: b.user_email })));
+    }
+    
+    if (allBotsError) {
+      console.error('[loadBotConfig] Error querying bots:', allBotsError);
       return null;
     }
     
-    // Get telegram token for this bot
-    const { data: tgKey, error: tgError } = await supabase
+    if (!allBots || allBots.length === 0) {
+      console.error('[loadBotConfig] No active bots found with this secret');
+      return null;
+    }
+    
+    if (allBots.length > 1) {
+      console.error('[loadBotConfig] DUPLICATE BOTS FOUND - multiple active bots with same secret!');
+      return null;
+    }
+    
+    const bot = allBots[0];
+    console.log(`[loadBotConfig] Using bot: ${bot.name} (${bot.id})`);
+    
+    // Check how many telegram keys exist for this bot
+    const { data: allTgKeys, error: allTgKeysError } = await supabase
       .from('tg_bot_keys')
       .select('tg_token')
-      .eq('linked_bot', bot.id)
-      .single();
+      .eq('linked_bot', bot.id);
     
-    if (tgError || !tgKey) {
-      console.error('Telegram key not found:', tgError);
+    console.log(`[loadBotConfig] Found ${allTgKeys?.length || 0} telegram keys for bot ${bot.id}`);
+    
+    if (allTgKeysError) {
+      console.error('[loadBotConfig] Error querying telegram keys:', allTgKeysError);
       return null;
+    }
+    
+    if (!allTgKeys || allTgKeys.length === 0) {
+      console.error('[loadBotConfig] No telegram keys found for this bot');
+      return null;
+    }
+    
+    const allTokens = allTgKeys.map(key => key.tg_token);
+    
+    if (allTgKeys.length > 1) {
+      console.log('[loadBotConfig] Multiple telegram keys found - will use all of them');
+      console.log(`[loadBotConfig] Tokens: ${allTokens.map(t => t.substring(0, 10) + '...').join(', ')}`);
+    } else {
+      console.log(`[loadBotConfig] Using telegram token: ${allTokens[0].substring(0, 10)}...`);
     }
     
     return {
       id: bot.id,
       name: bot.name,
-      tg_token: tgKey.tg_token,
+      tg_token: allTokens[0], // Primary token (for backward compatibility)
+      tg_tokens: allTokens, // All tokens
       user_email: bot.user_email,
       system_prompt: bot.system_prompt,
       welcome_message: bot.welcome_message,
