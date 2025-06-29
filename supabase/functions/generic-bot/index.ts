@@ -10,6 +10,7 @@ import {
   personalizeHelpMessage,
   upsertTelegramUser,
   getWebtoolsForBot,
+  getUserContext,
   type BotConfig,
   type ChatMessage
 } from './dal.ts';
@@ -167,9 +168,24 @@ IMPORTANT: Use search to get up-to-date information. Do not use markdown for for
 Respond concisely, no more than 7 points for the entire response. Use images when possible.
 The TG_CONCLUSION command should be the last in the response.`;
 
-// Combine bot's custom system prompt with standard Telegram formatting instructions
-function buildSystemPrompt(botSystemPrompt: string): string {
-  return botSystemPrompt + STANDARD_SYSTEM_PROMPT;
+// Combine bot's custom system prompt with user context and standard Telegram formatting instructions
+async function buildSystemPrompt(botSystemPrompt: string, userId: number, userEmail: string): Promise<string> {
+  // Get user context
+  const userContext = await getUserContext(userId, userEmail);
+  
+  let contextSection = '';
+  if (userContext && userContext.trim().length > 0) {
+    contextSection = `
+
+## User Context
+The following information is about this user from previous conversations:
+${userContext}
+
+Please use this context to personalize your responses and refer to relevant details when appropriate.
+`;
+  }
+  
+  return botSystemPrompt + contextSection + STANDARD_SYSTEM_PROMPT;
 }
 
 // Handle /start command
@@ -301,16 +317,19 @@ async function processMessage(
       // Load webtools for this bot
       const webtools = await getWebtoolsForBot(botConfig.id);
       
+      // Build system prompt with user context
+      const systemPromptWithContext = await buildSystemPrompt(botConfig.system_prompt, userId, botConfig.user_email);
+      
       // Process image and get response
       const imageResponse = await processImageWithLLM(
         imageUrl,
         message.caption || "Please analyze this image.",
-        buildSystemPrompt(botConfig.system_prompt),
+        systemPromptWithContext,
         {
           botApiKey: botConfig.tg_token,
           chatId: chatId,
           tavilyApiKey: Deno.env.get('TAVILY_API_KEY'),
-          systemPrompt: buildSystemPrompt(botConfig.system_prompt),
+          systemPrompt: systemPromptWithContext,
           webtools: webtools
         }
       );
@@ -365,13 +384,16 @@ async function processMessage(
       // Load webtools for this bot
       const webtools = await getWebtoolsForBot(botConfig.id);
       
+      // Build system prompt with user context
+      const systemPromptWithContext = await buildSystemPrompt(botConfig.system_prompt, userId, botConfig.user_email);
+      
       // Generate and stream response
       const assistantResponse = await reply(
         {
           botApiKey: botConfig.tg_token,
           chatId: chatId,
           tavilyApiKey: Deno.env.get('TAVILY_API_KEY'),
-          systemPrompt: buildSystemPrompt(botConfig.system_prompt),
+          systemPrompt: systemPromptWithContext,
           webtools: webtools
         },
         messages

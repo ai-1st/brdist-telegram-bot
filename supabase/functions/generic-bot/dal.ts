@@ -2,6 +2,8 @@
 // ABOUTME: Manages bot configuration, message history, and user data in Supabase
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+import { generateText } from 'https://esm.sh/ai@4.2.6';
+import { createAmazonBedrock } from 'https://esm.sh/@ai-sdk/amazon-bedrock';
 
 /* Data Schema for reference - do not remove
 -- WARNING: This schema is for context only and is not meant to be run.
@@ -58,6 +60,7 @@ CREATE TABLE public.tg_users (
   last_name text,
   username text,
   language_code text,
+  context text DEFAULT ''::text,
   CONSTRAINT tg_users_pkey PRIMARY KEY (id, user_email)
 );
 */
@@ -258,6 +261,17 @@ async function getCurrentSession(
     if (latestMessage.message_text === '/clear' || hoursDiff > 24) {
       const newSession = latestMessage.session + 1;
       console.log(`[getCurrentSession] Starting new session ${newSession} (last message: ${latestMessage.message_text}, hours ago: ${hoursDiff.toFixed(1)})`);
+      
+      // If session expired (not manually cleared), enrich context from previous session
+      if (latestMessage.message_text !== '/clear' && hoursDiff > 24) {
+        console.log(`[getCurrentSession] Session expired, enriching context from session ${latestMessage.session}`);
+        try {
+          await enrichUserContext(userId, chatId, botId, userEmail, latestMessage.session);
+        } catch (error) {
+          console.error('[getCurrentSession] Error enriching context for expired session:', error);
+        }
+      }
+      
       return newSession;
     }
     
@@ -314,7 +328,7 @@ export async function addMessageToHistory(message: DbMessage): Promise<boolean> 
   }
 }
 
-// Add /clear message to mark session as closed
+// Add /clear message to mark session as closed and enrich user context
 export async function addClearMessage(
   userId: number, 
   chatId: string, 
@@ -328,6 +342,13 @@ export async function addClearMessage(
     const currentSession = await getCurrentSession(userId, chatId, botId, userEmail);
     
     console.log(`[addClearMessage] Adding /clear message for session ${currentSession}`);
+    
+    // Enrich user context before closing session
+    try {
+      await enrichUserContext(userId, chatId, botId, userEmail, currentSession);
+    } catch (error) {
+      console.error('[addClearMessage] Error enriching context (continuing with /clear):', error);
+    }
     
     // Add /clear message to current session
     const { error } = await supabase
@@ -459,5 +480,158 @@ export async function getWebtoolsForBot(botId: string): Promise<Webtool[]> {
   } catch (error) {
     console.error('[getWebtoolsForBot] Unexpected error:', error);
     return [];
+  }
+}
+
+// Get Amazon Bedrock model
+function getModel() {
+  const bedrock = createAmazonBedrock({
+    region: Deno.env.get('AWS_REGION') || 'us-east-1',
+    accessKeyId: Deno.env.get('AWS_ACCESS_KEY_ID'),
+    secretAccessKey: Deno.env.get('AWS_SECRET_ACCESS_KEY'),
+  });
+  
+  return bedrock('us.anthropic.claude-3-7-sonnet-20250219-v1:0');
+}
+
+// Get user context from tg_users table
+export async function getUserContext(userId: number, userEmail: string): Promise<string> {
+  const supabase = getSupabaseClient();
+  
+  try {
+    const { data, error } = await supabase
+      .from('tg_users')
+      .select('context')
+      .eq('id', userId)
+      .eq('user_email', userEmail)
+      .single();
+    
+    if (error || !data) {
+      console.log(`[getUserContext] No context found for user ${userId}`);
+      return '';
+    }
+    
+    return data.context || '';
+  } catch (error) {
+    console.error('[getUserContext] Error fetching user context:', error);
+    return '';
+  }
+}
+
+// Update user context in tg_users table
+export async function updateUserContext(userId: number, userEmail: string, context: string): Promise<boolean> {
+  const supabase = getSupabaseClient();
+  
+  try {
+    console.log(`[updateUserContext] Updating context for user ${userId}`);
+    
+    const { error } = await supabase
+      .from('tg_users')
+      .update({ 
+        context: context,
+        updated_at: new Date().toISOString()
+      })
+      .eq('id', userId)
+      .eq('user_email', userEmail);
+    
+    if (error) {
+      console.error('[updateUserContext] Error updating user context:', error);
+      return false;
+    }
+    
+    console.log('[updateUserContext] User context updated successfully');
+    return true;
+  } catch (error) {
+    console.error('[updateUserContext] Unexpected error:', error);
+    return false;
+  }
+}
+
+// Enrich user context using LLM analysis of session messages
+export async function enrichUserContext(
+  userId: number,
+  chatId: string,
+  botId: string,
+  userEmail: string,
+  sessionNumber: number
+): Promise<boolean> {
+  const supabase = getSupabaseClient();
+  
+  try {
+    console.log(`[enrichUserContext] Enriching context for user ${userId}, session ${sessionNumber}`);
+    
+    // Get current user context
+    const currentContext = await getUserContext(userId, userEmail);
+    
+    // Get all messages from the session (excluding /clear)
+    const { data: sessionMessages, error } = await supabase
+      .from('messages')
+      .select('role, message_text, created_at')
+      .eq('user_email', userEmail)
+      .eq('user_id', userId)
+      .eq('chat_id', chatId)
+      .eq('bot_id', botId)
+      .eq('session', sessionNumber)
+      .neq('message_text', '/clear')
+      .order('created_at', { ascending: true });
+    
+    if (error || !sessionMessages || sessionMessages.length === 0) {
+      console.log(`[enrichUserContext] No session messages found for enrichment`);
+      return false;
+    }
+    
+    // Format messages for LLM analysis
+    const conversationText = sessionMessages
+      .map(msg => `${msg.role}: ${msg.message_text}`)
+      .join('\n');
+    
+    // Create prompt for context enrichment
+    const enrichmentPrompt = `
+You are analyzing a conversation to extract and update user context. Your task is to:
+
+1. Review the current user context (if any)
+2. Analyze the conversation for new facts, preferences, and important details about the user
+3. Update the context to include new information while preserving existing relevant context
+4. Keep the context concise but comprehensive
+
+Current user context:
+${currentContext || 'No previous context'}
+
+Recent conversation:
+${conversationText}
+
+Please provide an updated user context that includes:
+- User preferences and interests
+- Important personal details mentioned
+- Communication style preferences
+- Any specific needs or requirements
+- Key facts about the user's situation or goals
+
+Return ONLY the updated context text, nothing else. Keep it under 500 words and focus on facts that would be useful for future conversations.
+`;
+
+    // Use LLM to enrich context
+    const result = await generateText({
+      model: getModel(),
+      prompt: enrichmentPrompt,
+      maxTokens: 600,
+    });
+    
+    const enrichedContext = result.text.trim();
+    
+    if (enrichedContext && enrichedContext.length > 10) {
+      // Update user context
+      const success = await updateUserContext(userId, userEmail, enrichedContext);
+      if (success) {
+        console.log(`[enrichUserContext] Context enriched successfully for user ${userId}`);
+        return true;
+      }
+    }
+    
+    console.log(`[enrichUserContext] No meaningful context enrichment generated`);
+    return false;
+  } catch (error) {
+    console.error('[enrichUserContext] Error enriching user context:', error);
+    return false;
   }
 }
