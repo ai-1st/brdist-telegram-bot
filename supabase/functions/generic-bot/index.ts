@@ -191,7 +191,8 @@ Please use this context to personalize your responses and refer to relevant deta
 // Handle /start command
 async function handleStartCommand(
   message: TelegramMessage,
-  botConfig: BotConfig
+  botConfig: BotConfig,
+  tgToken: string
 ): Promise<void> {
   const welcomeMessage = personalizeWelcomeMessage(
     botConfig.welcome_message,
@@ -200,7 +201,7 @@ async function handleStartCommand(
   );
   
   await sendTelegramMessage(
-    botConfig.tg_token,
+    tgToken,
     message.chat.id,
     welcomeMessage
   );
@@ -217,7 +218,8 @@ async function handleStartCommand(
 // Handle /help command
 async function handleHelpCommand(
   message: TelegramMessage,
-  botConfig: BotConfig
+  botConfig: BotConfig,
+  tgToken: string
 ): Promise<void> {
   const helpMessage = personalizeHelpMessage(
     botConfig.help_message,
@@ -225,7 +227,7 @@ async function handleHelpCommand(
   );
   
   await sendTelegramMessage(
-    botConfig.tg_token,
+    tgToken,
     message.chat.id,
     helpMessage
   );
@@ -234,7 +236,8 @@ async function handleHelpCommand(
 // Handle /clear command
 async function handleClearCommand(
   message: TelegramMessage,
-  botConfig: BotConfig
+  botConfig: BotConfig,
+  tgToken: string
 ): Promise<void> {
   await clearChatHistory(
     message.from.id,
@@ -244,7 +247,7 @@ async function handleClearCommand(
   );
   
   await sendTelegramMessage(
-    botConfig.tg_token,
+    tgToken,
     message.chat.id,
     "✨ Conversation history cleared! Let's start fresh."
   );
@@ -253,7 +256,8 @@ async function handleClearCommand(
 // Process message (text or image)
 async function processMessage(
   message: TelegramMessage,
-  botConfig: BotConfig
+  botConfig: BotConfig,
+  tgToken: string
 ): Promise<void> {
   console.log(`[processMessage] Starting message processing at ${new Date().toISOString()}`);
   console.log(`[processMessage] Message:`, message);
@@ -265,17 +269,17 @@ async function processMessage(
   if (message.text?.startsWith("/")) {
     switch (message.text) {
       case "/start":
-        await handleStartCommand(message, botConfig);
+        await handleStartCommand(message, botConfig, tgToken);
         return;
       case "/help":
-        await handleHelpCommand(message, botConfig);
+        await handleHelpCommand(message, botConfig, tgToken);
         return;
       case "/clear":
-        await handleClearCommand(message, botConfig);
+        await handleClearCommand(message, botConfig, tgToken);
         return;
       default:
         await sendTelegramMessage(
-          botConfig.tg_token,
+          tgToken,
           chatId,
           "Unknown command. Try /help to see available commands."
         );
@@ -290,7 +294,7 @@ async function processMessage(
     // Handle image messages (photos, image documents, and stickers)
     if (message.photo || (message.document?.mime_type?.startsWith('image/')) || message.sticker) {
       await sendTelegramMessage(
-        botConfig.tg_token,
+        tgToken,
         chatId,
         message.sticker ? "🎨 Analyzing sticker..." : "🔍 Analyzing image..."
       );
@@ -301,10 +305,10 @@ async function processMessage(
         ? message.document.file_id
         : message.sticker!.file_id;
       
-      const imageUrl = await getFileUrl(botConfig.tg_token, fileId);
+      const imageUrl = await getFileUrl(tgToken, fileId);
       if (!imageUrl) {
         await sendTelegramMessage(
-          botConfig.tg_token,
+          tgToken,
           chatId,
           "Sorry, I couldn't access the image. Please try again."
         );
@@ -312,7 +316,7 @@ async function processMessage(
       }
       
       // Send typing indicator before LLM call
-      await sendChatAction(botConfig.tg_token, chatId);
+      await sendChatAction(tgToken, chatId);
       
       // Load webtools for this bot
       const webtools = await getWebtoolsForBot(botConfig.id);
@@ -326,7 +330,7 @@ async function processMessage(
         message.caption || "Please analyze this image.",
         systemPromptWithContext,
         {
-          botApiKey: botConfig.tg_token,
+          botApiKey: tgToken,
           chatId: chatId,
           tavilyApiKey: Deno.env.get('TAVILY_API_KEY'),
           systemPrompt: systemPromptWithContext,
@@ -339,7 +343,8 @@ async function processMessage(
         user_id: userId,
         chat_id: chatIdStr,
         role: 'user',
-        message_text: message.caption || (message.sticker ? '[Sticker sent]' : '[Image uploaded]'),
+        message_text: message.caption || (message.sticker ? 'Sticker' : 'Image'),
+        image_url: imageUrl,
         bot_id: botConfig.id,
         user_email: botConfig.user_email
       });
@@ -379,7 +384,7 @@ async function processMessage(
       });
       
       // Send typing indicator before LLM call
-      await sendChatAction(botConfig.tg_token, chatId);
+      await sendChatAction(tgToken, chatId);
       
       // Load webtools for this bot
       const webtools = await getWebtoolsForBot(botConfig.id);
@@ -390,7 +395,7 @@ async function processMessage(
       // Generate and stream response
       const assistantResponse = await reply(
         {
-          botApiKey: botConfig.tg_token,
+          botApiKey: tgToken,
           chatId: chatId,
           tavilyApiKey: Deno.env.get('TAVILY_API_KEY'),
           systemPrompt: systemPromptWithContext,
@@ -441,6 +446,15 @@ async function handleWebhook(request: Request): Promise<Response> {
       return new Response("OK", { status: 200 });
     }
     
+    // Ensure bot has a telegram token
+    if (!botConfig.tg_token) {
+      console.error('[handleWebhook] Bot has no telegram token:', botConfig.name);
+      return new Response("OK", { status: 200 });
+    }
+    
+    // Create typed variable for the token
+    const tgToken = botConfig.tg_token;
+    
     console.log(`[handleWebhook] Bot found: ${botConfig.name} (ID: ${botConfig.id})`);
     
     // Parse webhook data
@@ -455,7 +469,7 @@ async function handleWebhook(request: Request): Promise<Response> {
       the promise provided to waitUntil completes.
       */
       // Process message asynchronously without waiting
-      processMessage(update.message, botConfig);
+      processMessage(update.message, botConfig, tgToken);
     }
     
     console.log('[handleWebhook] Webhook processing is handled in background');
@@ -502,6 +516,19 @@ async function handleSetWebhook(request: Request): Promise<Response> {
       });
     }
     
+    // Ensure tg_token is not null
+    const tgToken = botConfig.tg_token;
+    if (!tgToken) {
+      console.log('[SET-WEBHOOK] ERROR: Telegram token is null');
+      return new Response(JSON.stringify({
+        success: false,
+        error: "Telegram token is null"
+      }), {
+        status: 404,
+        headers
+      });
+    }
+    
     console.log(`[SET-WEBHOOK] Bot found: ${botConfig.name}`);
     
     // Get Supabase URL to construct webhook URL
@@ -534,64 +561,30 @@ async function handleSetWebhook(request: Request): Promise<Response> {
     const webhookUrl = `https://${projectRef}.supabase.co/functions/v1/generic-bot?secret=${secretString}`;
     console.log(`[SET-WEBHOOK] Webhook URL: ${webhookUrl}`);
     
-    // Set webhook for all telegram tokens
-    const results = [];
-    let allSuccessful = true;
+    // Set webhook via Telegram API
+    const telegramUrl = `https://api.telegram.org/bot${tgToken}/setWebhook`;
+    const response = await fetch(telegramUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ url: webhookUrl })
+    });
     
-    console.log(`[SET-WEBHOOK] Setting webhooks for ${botConfig.tg_tokens.length} token(s)`);
+    const result = await response.json();
+    console.log(`[SET-WEBHOOK] Telegram response:`, result);
     
-    for (let i = 0; i < botConfig.tg_tokens.length; i++) {
-      const token = botConfig.tg_tokens[i];
-      const tokenLabel = `Token ${i + 1}/${botConfig.tg_tokens.length} (${token.substring(0, 10)}...)`;
-      
-      console.log(`[SET-WEBHOOK] Processing ${tokenLabel}`);
-      
-      try {
-        const telegramUrl = `https://api.telegram.org/bot${token}/setWebhook`;
-        const response = await fetch(telegramUrl, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ url: webhookUrl })
-        });
-        
-        const result = await response.json();
-        console.log(`[SET-WEBHOOK] ${tokenLabel} response:`, result);
-        
-        results.push({
-          token: token.substring(0, 10) + '...',
-          success: result.ok,
-          response: result
-        });
-        
-        if (result.ok) {
-          console.log(`[SET-WEBHOOK] ✅ ${tokenLabel} webhook set successfully`);
-        } else {
-          console.log(`[SET-WEBHOOK] ❌ ${tokenLabel} failed to set webhook`);
-          allSuccessful = false;
-        }
-      } catch (error) {
-        console.error(`[SET-WEBHOOK] Exception for ${tokenLabel}:`, error);
-        results.push({
-          token: token.substring(0, 10) + '...',
-          success: false,
-          error: error instanceof Error ? error.message : 'Unknown error'
-        });
-        allSuccessful = false;
-      }
+    if (result.ok) {
+      console.log(`[SET-WEBHOOK] ✅ Webhook set successfully`);
+    } else {
+      console.log(`[SET-WEBHOOK] ❌ Failed to set webhook`);
     }
     
-    const successCount = results.filter(r => r.success).length;
-    console.log(`[SET-WEBHOOK] Summary: ${successCount}/${results.length} webhooks set successfully`);
-    
     return new Response(JSON.stringify({
-      success: allSuccessful,
+      success: result.ok,
       webhook_url: webhookUrl,
       bot_name: botConfig.name,
-      tokens_processed: results.length,
-      successful_webhooks: successCount,
-      results: results
+      telegram_response: result
     }), {
-      status: allSuccessful ? 200 : 400,
+      status: result.ok ? 200 : 400,
       headers
     });
     

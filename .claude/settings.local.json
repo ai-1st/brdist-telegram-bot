@@ -12,7 +12,8 @@
       "Bash(rg:*)",
       "Bash(deno check:*)",
       "Bash(deno run:*)",
-      "WebFetch(domain:sdk.vercel.ai)"
+      "WebFetch(domain:sdk.vercel.ai)",
+      "mcp__ide__getDiagnostics"
     ],
     "deny": []
   },

@@ -20,6 +20,7 @@ CREATE TABLE public.bots (
   created_at timestamp with time zone DEFAULT now(),
   welcome_message text DEFAULT 'Welcome! I''m here to help you. Type /help to see what I can do.'::text,
   help_message text DEFAULT 'Here are the commands I understand:\n\n/start - Get started\n/help - Show this help message\n\nJust send me a message and I''ll do my best to help!'::text,
+  tg_token text,
   CONSTRAINT bots_pkey PRIMARY KEY (id)
 );
 
@@ -28,6 +29,7 @@ CREATE TABLE public.messages (
   chat_id bigint NOT NULL,
   role text NOT NULL,
   message_text text NOT NULL,
+  image_url text,
   created_at timestamp with time zone DEFAULT now(),
   id bigint NOT NULL DEFAULT nextval('messages_id_seq'::regclass),
   bot_id uuid,
@@ -68,8 +70,7 @@ CREATE TABLE public.tg_users (
 export interface BotConfig {
   id: string;
   name: string;
-  tg_token: string;
-  tg_tokens: string[]; // Array of all tokens for this bot
+  tg_token: string | null;
   user_email: string;
   system_prompt: string;
   welcome_message: string;
@@ -83,6 +84,7 @@ export interface BotConfig {
 export interface ChatMessage {
   role: 'user' | 'assistant' | 'system';
   content: string;
+  image_url?: string;
 }
 
 export interface DbMessage {
@@ -91,6 +93,7 @@ export interface DbMessage {
   chat_id: string;
   role: 'user' | 'assistant' | 'system';
   message_text: string;
+  image_url?: string;
   bot_id?: string;
   user_email: string;
   created_at?: string;
@@ -138,68 +141,30 @@ export async function loadBotConfig(secretString: string): Promise<BotConfig | n
   try {
     console.log(`[loadBotConfig] Searching for bot with secret: ${secretString}`);
     
-    // First, check how many bots match the secret (without .single())
-    const { data: allBots, error: allBotsError } = await supabase
+    const { data: bot, error: botError } = await supabase
       .from('bots')
       .select('*')
       .eq('secret_string', secretString)
-      .eq('is_active', true);
+      .eq('is_active', true)
+      .single();
     
-    console.log(`[loadBotConfig] Found ${allBots?.length || 0} active bots with this secret`);
-    if (allBots && allBots.length > 0) {
-      console.log(`[loadBotConfig] Bot details:`, allBots.map(b => ({ id: b.id, name: b.name, user_email: b.user_email })));
-    }
-    
-    if (allBotsError) {
-      console.error('[loadBotConfig] Error querying bots:', allBotsError);
+    if (botError || !bot) {
+      console.error('[loadBotConfig] Bot not found or error:', botError);
       return null;
     }
     
-    if (!allBots || allBots.length === 0) {
-      console.error('[loadBotConfig] No active bots found with this secret');
-      return null;
-    }
+    console.log(`[loadBotConfig] Found bot: ${bot.name} (${bot.id})`);
     
-    if (allBots.length > 1) {
-      console.error('[loadBotConfig] DUPLICATE BOTS FOUND - multiple active bots with same secret!');
-      return null;
-    }
-    
-    const bot = allBots[0];
-    console.log(`[loadBotConfig] Using bot: ${bot.name} (${bot.id})`);
-    
-    // Check how many telegram keys exist for this bot
-    const { data: allTgKeys, error: allTgKeysError } = await supabase
-      .from('tg_bot_keys')
-      .select('tg_token')
-      .eq('linked_bot', bot.id);
-    
-    console.log(`[loadBotConfig] Found ${allTgKeys?.length || 0} telegram keys for bot ${bot.id}`);
-    
-    if (allTgKeysError) {
-      console.error('[loadBotConfig] Error querying telegram keys:', allTgKeysError);
-      return null;
-    }
-    
-    if (!allTgKeys || allTgKeys.length === 0) {
-      console.error('[loadBotConfig] No telegram keys found for this bot');
-      return null;
-    }
-    
-    const allTokens = allTgKeys.map(key => key.tg_token);
-    
-    if (allTgKeys.length > 1) {
-      console.log('[loadBotConfig] Multiple telegram keys found - will use all of them');
-      console.log(`[loadBotConfig] Tokens: ${allTokens.map(t => t.substring(0, 10) + '...').join(', ')}`);
+    if (bot.tg_token) {
+      console.log(`[loadBotConfig] Bot has telegram token: ${bot.tg_token.substring(0, 10)}...`);
     } else {
-      console.log(`[loadBotConfig] Using telegram token: ${allTokens[0].substring(0, 10)}...`);
+      console.log('[loadBotConfig] Bot has no telegram token assigned');
     }
     
     return {
       id: bot.id,
       name: bot.name,
-      tg_token: allTokens[0], // Primary token (for backward compatibility)
-      tg_tokens: allTokens, // All tokens
+      tg_token: bot.tg_token,
       user_email: bot.user_email,
       system_prompt: bot.system_prompt,
       welcome_message: bot.welcome_message,
@@ -233,7 +198,7 @@ export async function getChatHistory(
     
     const { data, error } = await supabase
       .from('messages')
-      .select('role, message_text, created_at')
+      .select('role, message_text, image_url, created_at')
       .eq('user_email', userEmail)
       .eq('user_id', userId)
       .eq('chat_id', chatId)
@@ -253,7 +218,8 @@ export async function getChatHistory(
       .reverse()
       .map(msg => ({
         role: msg.role as 'user' | 'assistant',
-        content: msg.message_text
+        content: msg.message_text,
+        image_url: msg.image_url
       }));
   } catch (error) {
     console.error('Error in getChatHistory:', error);
@@ -346,6 +312,7 @@ export async function addMessageToHistory(message: DbMessage): Promise<boolean> 
         chat_id: message.chat_id,
         role: message.role,
         message_text: message.message_text,
+        image_url: message.image_url,
         bot_id: message.bot_id,
         user_email: message.user_email,
         session: sessionNumber
